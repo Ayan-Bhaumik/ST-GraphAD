@@ -38,19 +38,137 @@ Network Flows → Graph Construction → GCN Spatial Encoding → Temporal Atten
 
 ## Installation
 
+### macOS / Linux
+
 ```bash
 # Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# Install dependencies
+# Upgrade pip
+pip install --upgrade pip
+
+# Install PyTorch (CPU version)
+pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cpu
+
+# Install other dependencies
 pip install -r requirements.txt
 ```
 
-Or install manually:
+**For Apple Silicon (M1/M2/M3/M4) with GPU acceleration (MPS):**
+```bash
+# PyTorch with MPS support comes with standard install on macOS 12.3+ (PyTorch 2.0+)
+pip install torch torch-geometric
+
+# Verify MPS is available
+python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"
+```
+
+**Troubleshooting M4 / Apple Silicon:**
+
+If you encounter issues on M4, try these steps:
 
 ```bash
+# 1. Ensure you're on Python 3.10+ (M4 requires 3.10+)
+python --version
+
+# 2. Update pip and setuptools
+pip install --upgrade pip setuptools wheel
+
+# 3. Install with no cache (avoids corrupted wheels)
+pip install --no-cache-dir torch torch-geometric
+
+# 4. If torch-geometric fails, install PyG dependencies first
+pip install --no-cache-dir pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.4.0+cpu.html
+pip install torch-geometric
+
+# 5. Alternative: Use conda (often more reliable on Apple Silicon)
+conda create -n st-graphad python=3.11
+conda activate st-graphad
+conda install pytorch torchvision torchaudio -c pytorch
+conda install pyg -c pyg
+conda install pandas numpy scikit-learn matplotlib networkx scipy tqdm
+```
+
+**Common M4 Issues & Fixes:**
+
+| Error | Solution |
+|-------|----------|
+| `ModuleNotFoundError: torch` | Use `--no-cache-dir` or conda |
+| `MPS not available` | Requires macOS 13.0+, PyTorch 2.0+ |
+| `torch-geometric` install fails | Install PyG dependencies first (step 4 above) |
+| `ImportError: libomp.dylib` | `brew install libomp` |
+| `RuntimeError: MPS backend out of memory` | Reduce batch size, use CPU: `device = torch.device('cpu')` |
+
+**Force CPU Mode (if MPS causes issues):**
+```python
+# In main.py or your script, force CPU
+device = torch.device('cpu')
+# Or set environment variable
+import os
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+```
+
+### Windows
+
+**Option 1: Command Prompt (cmd.exe)**
+```cmd
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate.bat
+
+# Upgrade pip
+python -m pip install --upgrade pip
+
+# Install PyTorch (CPU version)
+pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cpu
+
+# Install other dependencies
+pip install -r requirements.txt
+```
+
+**Option 2: PowerShell**
+```powershell
+# Create virtual environment
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+# Upgrade pip
+python -m pip install --upgrade pip
+
+# Install PyTorch (CPU version)
+pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cpu
+
+# Install other dependencies
+pip install -r requirements.txt
+```
+
+**Option 3: Windows with NVIDIA GPU (CUDA)**
+```cmd
+# Install PyTorch with CUDA 11.8 support
+pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cu118
+
+# Install other dependencies
+pip install -r requirements.txt
+```
+
+**For CUDA 12.1:**
+```cmd
+pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cu121
+```
+
+### Manual Install (All Platforms)
+```bash
 pip install torch torch-geometric pandas numpy scikit-learn matplotlib networkx scipy tqdm
+```
+
+### Verify Installation
+```bash
+# Test imports
+python scripts/test_imports.py
+
+# Quick model test
+python scripts/test_model.py
 ```
 
 ## Dataset

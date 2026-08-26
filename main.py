@@ -44,7 +44,13 @@ def parse_args():
 
 def get_device(device_arg: str) -> torch.device:
     if device_arg == 'auto':
-        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Check for MPS (Apple Silicon) first, then CUDA, then CPU
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return torch.device('mps')
+        elif torch.cuda.is_available():
+            return torch.device('cuda')
+        else:
+            return torch.device('cpu')
     return torch.device(device_arg)
 
 
