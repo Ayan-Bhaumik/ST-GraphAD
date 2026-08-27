@@ -4,14 +4,14 @@
 
 ### Model Configuration
 
-- **hidden_channels**: 128
-- **gcn_layers**: 3
+- **hidden_channels**: 256
+- **gcn_layers**: 4
 - **temporal_layers**: 2
 - **num_heads**: 4
 - **dropout**: 0.5
 - **lr**: 0.001
 - **weight_decay**: 0.0005
-- **epochs**: 100
+- **epochs**: 200
 - **patience**: 20
 - **sequence_length**: 5
 - **max_train_sequences**: 200
@@ -21,9 +21,9 @@
 | Metric | GCN-only | ST-GNN | Improvement |
 |--------|----------|--------|-------------|
 | graph_auc | 0.0000 | 0.0000 | +0.0% |
-| graph_f1 | 1.0000 | 0.0000 | -100.0% |
-| graph_precision | 1.0000 | 0.0000 | -100.0% |
-| graph_recall | 1.0000 | 0.0000 | -100.0% |
+| graph_f1 | 1.0000 | 1.0000 | +0.0% |
+| graph_precision | 1.0000 | 1.0000 | +0.0% |
+| graph_recall | 1.0000 | 1.0000 | +0.0% |
 
 ## Visualizations
 
