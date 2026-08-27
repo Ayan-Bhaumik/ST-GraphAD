@@ -21,9 +21,9 @@
 | Metric | GCN-only | ST-GNN | Improvement |
 |--------|----------|--------|-------------|
 | graph_auc | 0.0000 | 0.0000 | +0.0% |
-| graph_f1 | 1.0000 | 1.0000 | +0.0% |
-| graph_precision | 1.0000 | 1.0000 | +0.0% |
-| graph_recall | 1.0000 | 1.0000 | +0.0% |
+| graph_f1 | 1.0000 | 0.0000 | -100.0% |
+| graph_precision | 1.0000 | 0.0000 | -100.0% |
+| graph_recall | 1.0000 | 0.0000 | -100.0% |
 
 ## Visualizations
 
