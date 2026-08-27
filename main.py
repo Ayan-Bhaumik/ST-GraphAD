@@ -16,7 +16,8 @@ import numpy as np
 from src.data_loader import load_unsw_nb15
 from src.models import create_model, GCNOnly, STGNN
 from src.train import train_model, compare_models, save_results, print_comparison_table
-from src.visualize import visualize_model_predictions, generate_report, plot_training_curves
+from src.visualize import visualize_model_predictions, generate_report
+from src.train import plot_training_curves
 
 
 def parse_args():

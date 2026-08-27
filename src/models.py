@@ -298,7 +298,10 @@ class GCNOnly(nn.Module):
             nn.Linear(hidden_channels // 2, 2)
         )
 
-    def forward(self, graph: Data, return_node_scores: bool = False) -> dict:
+    def forward(self, graph, return_node_scores: bool = False) -> dict:
+        # Handle both single graph and list of graphs (for compatibility)
+        if isinstance(graph, list):
+            graph = graph[0]
         embeddings = self.gcn_encoder(graph.x, graph.edge_index)
 
         graph_embedding = embeddings.mean(dim=0, keepdim=True)
@@ -321,10 +324,17 @@ class GCNOnly(nn.Module):
 
 def create_model(model_type: str, in_channels: int, **kwargs) -> nn.Module:
     """Factory function to create models."""
+    # Filter kwargs for each model type
+    gcn_kwargs = {k: v for k, v in kwargs.items()
+                  if k in ['hidden_channels', 'gcn_layers', 'dropout']}
+    stgnn_kwargs = {k: v for k, v in kwargs.items()
+                    if k in ['hidden_channels', 'gcn_layers', 'temporal_layers',
+                             'num_heads', 'dropout', 'use_temporal']}
+
     if model_type == 'gcn':
-        return GCNOnly(in_channels=in_channels, **kwargs)
+        return GCNOnly(in_channels=in_channels, **gcn_kwargs)
     elif model_type == 'stgnn':
-        return STGNN(in_channels=in_channels, **kwargs)
+        return STGNN(in_channels=in_channels, **stgnn_kwargs)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 

@@ -30,7 +30,7 @@ class Trainer:
         self.device = device
         self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='max', factor=0.5, patience=10, verbose=True
+            self.optimizer, mode='max', factor=0.5, patience=10
         )
         self.criterion = nn.CrossEntropyLoss()
 
@@ -68,6 +68,12 @@ class Trainer:
             graph_probs = output['graph_probs'].cpu().numpy()
             graph_preds = graph_probs.argmax(axis=1)
             graph_labels = labels.cpu().numpy()
+
+            # Ensure labels is array-like for sklearn
+            if graph_labels.ndim == 0:
+                graph_labels = np.array([graph_labels])
+            if graph_preds.ndim == 0:
+                graph_preds = np.array([graph_preds])
 
             # Graph-level metrics
             graph_auc = roc_auc_score(graph_labels, graph_probs[:, 1]) if len(np.unique(graph_labels)) > 1 else 0.0
@@ -117,8 +123,8 @@ def prepare_temporal_data(train_temporal: List[Data], test_temporal: List[Data],
 
         for i in range(len(graphs) - seq_len + 1):
             seq = graphs[i:i + seq_len]
-            # Label is from the last graph in sequence
-            label = seq[-1].y
+            # Label is from the last graph in sequence - use graph-level label (majority vote)
+            label = (seq[-1].y.float().mean() > 0.5).long()
             sequences.append(seq)
             labels.append(label)
 
@@ -166,8 +172,12 @@ def train_model(model_type: str, data: Dict, config: Dict, device: torch.device)
         # GCN-only: use static graphs
         train_seqs = [[data['train_static']]]
         test_seqs = [[data['test_static']]]
-        train_labels_tensor = data['train_static'].y.unsqueeze(0).to(device)
-        test_labels_tensor = data['test_static'].y.unsqueeze(0).to(device)
+        # For graph-level classification, we need a single label per graph
+        # Use the majority label or mean of node labels
+        train_label = (data['train_static'].y.float().mean() > 0.5).long().to(device)
+        test_label = (data['test_static'].y.float().mean() > 0.5).long().to(device)
+        train_labels_tensor = train_label.unsqueeze(0)
+        test_labels_tensor = test_label.unsqueeze(0)
 
     # Training loop
     best_auc = 0.0
