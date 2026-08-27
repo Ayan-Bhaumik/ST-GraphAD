@@ -16,24 +16,94 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-# UNSW-NB15 feature names (49 features + label)
+# UNSW-NB15 feature names (matching actual CSV columns)
 UNSW_FEATURES = [
-    'srcip', 'sport', 'dstip', 'dsport', 'proto', 'state', 'dur', 'sbytes', 'dbytes',
-    'sttl', 'dttl', 'sloss', 'dloss', 'service', 'Sload', 'Dload', 'Spkts', 'Dpkts',
-    'swin', 'dwin', 'stcpb', 'dtcpb', 'smeansz', 'dmeansz', 'trans_depth', 'res_bdy_len',
-    'Sjit', 'Djit', 'Stime', 'Ltime', 'Sintpkt', 'Dintpkt', 'tcprtt', 'synack', 'ackdat',
-    'is_sm_ips_ports', 'ct_state_ttl', 'ct_flw_http_mthd', 'is_ftp_login', 'ct_ftp_cmd',
-    'ct_srv_src', 'ct_srv_dst', 'ct_dst_ltm', 'ct_src_ltm', 'ct_src_dport_ltm',
-    'ct_dst_sport_ltm', 'ct_dst_src_ltm', 'attack_cat', 'label'
+    'id', 'dur', 'proto', 'service', 'state', 'spkts', 'dpkts', 'sbytes', 'dbytes',
+    'rate', 'sttl', 'dttl', 'sload', 'dload', 'sloss', 'dloss', 'sinpkt', 'dinpkt',
+    'sjit', 'djit', 'swin', 'stcpb', 'dtcpb', 'dwin', 'tcprtt', 'synack', 'ackdat',
+    'smean', 'dmean', 'trans_depth', 'response_body_len', 'ct_srv_src', 'ct_state_ttl',
+    'ct_dst_ltm', 'ct_src_dport_ltm', 'ct_dst_sport_ltm', 'ct_dst_src_ltm',
+    'is_ftp_login', 'ct_ftp_cmd', 'ct_flw_http_mthd', 'ct_src_ltm', 'ct_srv_dst',
+    'is_sm_ips_ports', 'attack_cat', 'label'
 ]
 
-CATEGORICAL_FEATURES = ['proto', 'state', 'service', 'attack_cat']
-NUMERICAL_FEATURES = [f for f in UNSW_FEATURES if f not in CATEGORICAL_FEATURES and f not in ['srcip', 'dstip', 'sport', 'dsport', 'label']]
+# Map our internal names to CSV names
+FEATURE_MAP = {
+    'srcip': 'id',  # We don't have srcip in this CSV, use id as placeholder
+    'sport': None,   # Not in this CSV
+    'dstip': None,   # Not in this CSV
+    'dsport': None,  # Not in this CSV
+    'proto': 'proto',
+    'state': 'state',
+    'dur': 'dur',
+    'sbytes': 'sbytes',
+    'dbytes': 'dbytes',
+    'sttl': 'sttl',
+    'dttl': 'dttl',
+    'sloss': 'sloss',
+    'dloss': 'dloss',
+    'service': 'service',
+    'Sload': 'sload',
+    'Dload': 'dload',
+    'Spkts': 'spkts',
+    'Dpkts': 'dpkts',
+    'swin': 'swin',
+    'dwin': 'dwin',
+    'stcpb': 'stcpb',
+    'dtcpb': 'dtcpb',
+    'smeansz': 'smean',
+    'dmeansz': 'dmean',
+    'trans_depth': 'trans_depth',
+    'res_bdy_len': 'response_body_len',
+    'Sjit': 'sjit',
+    'Djit': 'djit',
+    'Stime': None,
+    'Ltime': None,
+    'Sintpkt': 'sinpkt',
+    'Dintpkt': 'dinpkt',
+    'tcprtt': 'tcprtt',
+    'synack': 'synack',
+    'ackdat': 'ackdat',
+    'is_sm_ips_ports': 'is_sm_ips_ports',
+    'ct_state_ttl': 'ct_state_ttl',
+    'ct_flw_http_mthd': 'ct_flw_http_mthd',
+    'is_ftp_login': 'is_ftp_login',
+    'ct_ftp_cmd': 'ct_ftp_cmd',
+    'ct_srv_src': 'ct_srv_src',
+    'ct_srv_dst': 'ct_srv_dst',
+    'ct_dst_ltm': 'ct_dst_ltm',
+    'ct_src_ltm': 'ct_src_ltm',
+    'ct_src_dport_ltm': 'ct_src_dport_ltm',
+    'ct_dst_sport_ltm': 'ct_dst_sport_ltm',
+    'ct_dst_src_ltm': 'ct_dst_src_ltm',
+    'attack_cat': 'attack_cat',
+    'label': 'label'
+}
 
-# UNSW-NB15 dataset URLs
+CATEGORICAL_FEATURES = ['proto', 'state', 'service', 'attack_cat']
+# Use CSV column names for numerical features
+NUMERICAL_FEATURES = [
+    'dur', 'spkts', 'dpkts', 'sbytes', 'dbytes', 'rate', 'sttl', 'dttl',
+    'sload', 'dload', 'sloss', 'dloss', 'sinpkt', 'dinpkt', 'sjit', 'djit',
+    'swin', 'stcpb', 'dtcpb', 'dwin', 'tcprtt', 'synack', 'ackdat',
+    'smean', 'dmean', 'trans_depth', 'response_body_len',
+    'ct_srv_src', 'ct_state_ttl', 'ct_dst_ltm', 'ct_src_dport_ltm',
+    'ct_dst_sport_ltm', 'ct_dst_src_ltm', 'is_ftp_login', 'ct_ftp_cmd',
+    'ct_flw_http_mthd', 'ct_src_ltm', 'ct_srv_dst', 'is_sm_ips_ports'
+]
+
+# UNSW-NB15 dataset URLs (multiple mirrors)
 UNSW_URLS = {
-    'train': 'https://raw.githubusercontent.com/unsw-nb15/dataset/master/UNSW_NB15_training-set.csv',
-    'test': 'https://raw.githubusercontent.com/unsw-nb15/dataset/master/UNSW_NB15_testing-set.csv'
+    'train': [
+        'https://raw.githubusercontent.com/unsw-nb15/dataset/master/UNSW_NB15_training-set.csv',
+        'https://github.com/unsw-nb15/dataset/raw/master/UNSW_NB15_training-set.csv',
+        'https://cloudstor.aarnet.edu.au/plus/s/2DhnLGDdEECo4ys/download'  # Official UNSW CloudStor
+    ],
+    'test': [
+        'https://raw.githubusercontent.com/unsw-nb15/dataset/master/UNSW_NB15_testing-set.csv',
+        'https://github.com/unsw-nb15/dataset/raw/master/UNSW_NB15_testing-set.csv',
+        'https://cloudstor.aarnet.edu.au/plus/s/2DhnLGDdEECo4ys/download'  # Official UNSW CloudStor
+    ]
 }
 
 # Alternative: Using the CSV files from the official source
@@ -60,17 +130,26 @@ class UNSWNB15Loader:
         """Download UNSW-NB15 dataset if not present."""
         import urllib.request
 
-        for split, url in UNSW_URLS.items():
+        for split, urls in UNSW_URLS.items():
             filepath = os.path.join(self.data_dir, UNSW_LOCAL_FILES[split])
             if not os.path.exists(filepath):
                 print(f"Downloading {split} dataset...")
-                try:
-                    urllib.request.urlretrieve(url, filepath)
-                    print(f"Downloaded to {filepath}")
-                except Exception as e:
-                    print(f"Failed to download {split}: {e}")
+                success = False
+                for url in urls:
+                    try:
+                        urllib.request.urlretrieve(url, filepath)
+                        print(f"Downloaded to {filepath} from {url}")
+                        success = True
+                        break
+                    except Exception as e:
+                        print(f"  Failed from {url}: {e}")
+                        continue
+
+                if not success:
+                    print(f"All download attempts failed for {split}.")
                     print("Please manually download the dataset from:")
                     print("https://www.unsw.adfa.edu.au/unsw-canberra-cyber/cybersecurity/ADFA-NB15-Datasets/")
+                    print(f"Place files in: {self.data_dir}/")
 
     def load_raw_data(self):
         """Load raw CSV files."""
@@ -95,9 +174,28 @@ class UNSWNB15Loader:
         return not first_line.split(',')[0].replace('.', '').isdigit()
 
     def preprocess(self, train_df, test_df):
-        """Preprocess data: encode categorical, scale numerical, encode IPs/ports."""
+        """Preprocess data: encode categorical, scale numerical."""
         # Combine for consistent encoding
         combined = pd.concat([train_df, test_df], ignore_index=True)
+
+        # This CSV doesn't have srcip/dstip/sport/dsport
+        # We'll create pseudo-IPs from the 'id' column for graph construction
+        # Use 'id' as a unique flow identifier, and create source/dest from proto/state/service combos
+        # For graph construction, we'll use protocol+service+state as node identifiers
+
+        # Encode categorical features
+        for cat_feat in CATEGORICAL_FEATURES:
+            if cat_feat in combined.columns:
+                le = LabelEncoder()
+                combined[f'{cat_feat}_enc'] = le.fit_transform(combined[cat_feat].astype(str))
+                self.label_encoders[cat_feat] = le
+
+        # Create pseudo source/dest IPs from categorical combinations
+        # This allows us to build a graph structure
+        combined['srcip'] = combined['proto'].astype(str) + '_' + combined['service'].astype(str) + '_src'
+        combined['dstip'] = combined['state'].astype(str) + '_' + combined['service'].astype(str) + '_dst'
+        combined['sport'] = combined['proto'].astype(str) + '_' + combined['spkts'].astype(str)
+        combined['dsport'] = combined['state'].astype(str) + '_' + combined['dpkts'].astype(str)
 
         # Encode IP addresses
         all_ips = pd.concat([combined['srcip'], combined['dstip']]).unique()
@@ -110,13 +208,6 @@ class UNSWNB15Loader:
         self.port_encoder.fit(all_ports)
         combined['sport_enc'] = self.port_encoder.transform(combined['sport'])
         combined['dsport_enc'] = self.port_encoder.transform(combined['dsport'])
-
-        # Encode categorical features
-        for cat_feat in CATEGORICAL_FEATURES:
-            if cat_feat in combined.columns:
-                le = LabelEncoder()
-                combined[f'{cat_feat}_enc'] = le.fit_transform(combined[cat_feat].astype(str))
-                self.label_encoders[cat_feat] = le
 
         # Scale numerical features
         num_cols = [c for c in NUMERICAL_FEATURES if c in combined.columns]
@@ -131,10 +222,10 @@ class UNSWNB15Loader:
 
     def create_node_features(self, df):
         """Create node feature matrix from flow data."""
-        # Aggregate features per unique IP (node)
+        # Aggregate features per unique IP (node) - use actual CSV column names
         src_features = df.groupby('srcip_enc').agg({
-            'sbytes': 'mean', 'dbytes': 'mean', 'Spkts': 'mean', 'Dpkts': 'mean',
-            'Sload': 'mean', 'Dload': 'mean', 'dur': 'mean', 'sttl': 'mean',
+            'sbytes': 'mean', 'dbytes': 'mean', 'spkts': 'mean', 'dpkts': 'mean',
+            'sload': 'mean', 'dload': 'mean', 'dur': 'mean', 'sttl': 'mean',
             'dttl': 'mean', 'sloss': 'mean', 'dloss': 'mean',
             'proto_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
             'state_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
@@ -143,8 +234,8 @@ class UNSWNB15Loader:
         }).reset_index()
 
         dst_features = df.groupby('dstip_enc').agg({
-            'sbytes': 'mean', 'dbytes': 'mean', 'Spkts': 'mean', 'Dpkts': 'mean',
-            'Sload': 'mean', 'Dload': 'mean', 'dur': 'mean', 'sttl': 'mean',
+            'sbytes': 'mean', 'dbytes': 'mean', 'spkts': 'mean', 'dpkts': 'mean',
+            'sload': 'mean', 'dload': 'mean', 'dur': 'mean', 'sttl': 'mean',
             'dttl': 'mean', 'sloss': 'mean', 'dloss': 'mean',
             'proto_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
             'state_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
@@ -170,12 +261,12 @@ class UNSWNB15Loader:
     def create_temporal_graphs(self, df, time_window='1H'):
         """Create a sequence of graphs over time windows."""
         df = df.copy()
-        df['Stime'] = pd.to_datetime(df['Stime'], unit='s', errors='coerce')
-        df = df.dropna(subset=['Stime'])
-        df = df.sort_values('Stime')
-
-        # Create time windows
-        df['time_window'] = df['Stime'].dt.floor(time_window)
+        # This CSV doesn't have Stime - create pseudo-temporal windows based on row order
+        # We'll use row index as pseudo-time for demonstration
+        df['pseudo_time'] = range(len(df))
+        # Create bins based on row index (e.g., 1000 rows per window)
+        window_size = 1000
+        df['time_window'] = (df['pseudo_time'] // window_size).astype(str) + '_window'
 
         graphs = []
         for window, window_df in df.groupby('time_window'):
