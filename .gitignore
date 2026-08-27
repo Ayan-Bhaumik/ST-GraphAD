@@ -1,6 +1,49 @@
-venv/
+# Python
 __pycache__/
-*.pyc
-.env
-.DS_Store
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Data
+data/*.csv
+data/*.zip
+*.pkl
+
+# Models
+models/*.pt
+models/*.pth
+*.ckpt
+
+# Results
+results/*.png
+results/*.json
+results/*.csv
+results/predictions_*/
+
+# Jupyter
 .ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+wandb/
+lightning_logs/
+
+# Cache
+.cache/
+.pytest_cache/
+.mypy_cache/
