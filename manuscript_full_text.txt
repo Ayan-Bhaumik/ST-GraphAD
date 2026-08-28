@@ -1,681 +1,395 @@
 ST-GraphAD: Spatio-Temporal Graph Neural Network for Network Intrusion Detection on UNSW-NB15
+
 Ayan Bhaumik
 Independent Researcher
 mrayanbhaumik@gmail.com  •  connect@ayanbhaumik.in
+
 Abstract
-Network intrusion detection systems (NIDS) increasingly face multi-stage attacks that manifest not as isolated anomalous flows but as evolving communication patterns among network entities. Flow-based and signature-based detectors evaluate connections independently and therefore cannot represent this relational structure. We propose ST-GraphAD, a spatio-temporal graph neural network that models network communication as a sequence of dynamic attributed graphs and jointly learns spatial communication structure and temporal attack evolution. Because the UNSW-NB15 CSV release omits explicit IP addresses, graphs are constructed with nodes derived from protocol–service–state tuples and edges corresponding to observed flows; this substitution is treated as an explicit, disclosed limitation rather than a hidden assumption. A three-layer graph convolutional network (GCN) encodes spatial structure within each time window, and a two-layer, four-head temporal attention module models dependencies across a sliding sequence of five graph snapshots. The network is trained end-to-end with a combined graph-level and node-level cross-entropy objective.
-On UNSW-NB15 (175,341 training flows and 82,332 test flows spanning nine attack categories), ST-GraphAD attains 0.91 node-level AUC-ROC and 0.88 F1, compared with 0.87 AUC and 0.84 F1 for a static GCN baseline trained under identical conditions. Graph-level evaluation is degenerate under this dataset's class distribution (≈95% of nodes are attack-labeled, so every snapshot receives the majority-vote label “Attack”), yielding AUC = 0.00 for both models; we report this explicitly as an artifact of the label construction rather than a model failure, and treat node-level detection as the primary task throughout. We report computational cost (ST-GraphAD: 4.2M parameters, ~5.9 GB peak memory; GCN-only: 180K parameters, ~230 MB) and enumerate the study's principal limitations — pseudo-node construction, fixed-width temporal windows, validation on the test split, and the absence of per-attack-category and multi-seed evaluation — so that the reported gains are interpreted at the correct level of confidence. An open-source PyTorch Geometric implementation accompanies the paper.
-Index Terms—
-Network intrusion detection, graph neural networks, spatio-temporal modeling, UNSW-NB15, temporal attention, anomaly detection.
+
+Network intrusion detection systems (NIDS) increasingly face multi-stage attacks that manifest not as isolated anomalous flows but as evolving communication patterns among network entities. Flow-based and signature-based detectors evaluate connections independently and therefore cannot represent this relational structure. We propose ST-GraphAD, a spatio-temporal graph neural network that models network communication as a sequence of dynamic attributed graphs and jointly learns spatial communication structure and temporal attack evolution. Because the UNSW-NB15 CSV release omits explicit IP addresses, graphs are constructed with nodes derived from protocol–service–state tuples and edges corresponding to observed flows; this substitution is treated as an explicit, disclosed limitation rather than a hidden assumption. A three-layer graph convolutional network (GCN) encodes spatial structure within each time window, and a two-layer, four-head temporal attention module models dependencies across a sliding sequence of five graph snapshots. The network is trained end-to-end with a combined graph-level and node-level cross-entropy objective, using node-level validation AUC-ROC for early stopping and model selection to avoid degenerate graph-level metrics caused by class imbalance.
+
+On UNSW-NB15, with the training CSV split into 85% training and 15% validation partitions, the official test CSV held out for final evaluation, preprocessing transformations fitted on the training partition only, and evaluation repeated over five random seeds, ST-GraphAD attains 0.657 ± 0.078 node-level AUC-ROC and 0.858 ± 0.021 F1-score, compared with 0.612 ± 0.030 AUC and 0.836 ± 0.013 F1 for a static GCN baseline trained under identical conditions. The mean AUC improvement is 4.5 percentage points absolute. ST-GraphAD also attains a mean recall of 0.939 ± 0.037 against 0.889 ± 0.023 for GCN, a 5.0 percentage-point absolute improvement. The larger standard deviation of ST-GraphAD (AUC std 0.078 vs. 0.030) indicates greater sensitivity to initialization; the observed improvement is therefore not claimed to be statistically established without further testing. Graph-level evaluation is degenerate under this dataset's class distribution (approximately 88% of nodes in the temporal graphs are attack-labeled, so almost every snapshot receives the majority-vote label "Attack"), yielding AUC = 0.00 for both models; we report this explicitly as an artifact of the label construction rather than a model failure, and treat node-level detection as the primary task throughout. We report computational cost, discuss the pseudo-node construction limitation, and identify key gaps for future work.
+
+Keywords: Network Intrusion Detection, Graph Neural Networks, Spatio-Temporal Modeling, UNSW-NB15, Temporal Attention
+
 1. Introduction
-1.1 Background
-Network intrusion detection remains a foundational cybersecurity capability. Modern networks generate very high volumes of traffic, within which adversaries execute multi-stage campaigns—reconnaissance, lateral movement, privilege escalation, and data exfiltration—that can span from minutes to months. Signature-based systems (e.g., Snort, Suricata) are effective against known threats but fail against zero-day and polymorphic attacks by construction, since they require a pre-existing rule or signature. Anomaly-based approaches built on classical machine learning (random forests, gradient-boosted trees, autoencoders) and deep learning (CNNs, LSTMs) improve coverage of novel attacks but typically operate on per-flow feature vectors in isolation, discarding the relational context of which entities communicate with which, and when. This omission matters because many real attacks are defined precisely by that relational and temporal structure rather than by any single flow's statistics.
-1.2 Problem Motivation
-Network traffic naturally forms a dynamic graph:
-Nodes: IP addresses, hosts, or protocol-service endpoints.
-Edges: Observed communication flows with attributes (bytes, packets, duration, flags).
-Temporal dynamics: The graph evolves as new flows appear, entities join/leave, and attack stages progress.
-Static graph neural networks (GCN, GAT, GraphSAGE) capture spatial structure but treat each snapshot independently. Yet attack campaigns are temporal processes: a port scan (reconnaissance) precedes an exploit attempt; a compromised beaconing host exhibits periodic C2 communication. Modeling this temporal dimension is essential for detecting low-and-slow and multi-stage intrusions.
-1.3 Research Gap
-Despite growing interest in GNNs for cybersecurity, three gaps persist:
-Lack of temporal modeling: Most graph-based NIDS use static graph snapshots, ignoring attack evolution.
-Inconsistent graph construction from tabular datasets: Public datasets (UNSW-NB15, CICIDS2017, CSE-CIC-IDS2018) are released as flow-level CSVs, often lacking explicit source/destination IP addresses. Prior work either assumes IPs exist or uses ad-hoc node definitions without rigorous justification.
-Evaluation conflation: Graph-level metrics are frequently reported without acknowledging that graph labels derived from node-level majority vote can be degenerate under class imbalance.
-1.4 Problem Statement
-Given a sequence of network flow records F = {f₁, f₂, …, f_N} collected over a monitoring period, we construct a sequence of attributed graphs G = {G₁, G₂, …, G_T}, where each G_t = (V, E_t, X_t) represents communication observed in time window t. The goal is to learn a function f_θ: G → [0,1]^|V| that assigns an anomaly score to every node in the most recent window, such that nodes participating in malicious communication are ranked above benign nodes.
-1.5 Objectives
-Design a reproducible graph construction pipeline for the UNSW-NB15 CSV release that explicitly documents heuristic choices necessitated by missing IP/port fields.
-Propose ST-GraphAD: a spatial GCN encoder + temporal multi-head attention architecture for node-level anomaly scoring.
-Evaluate rigorously on UNSW-NB15 with node-level metrics as the primary task, and honestly report graph-level metric failure modes.
-Release open-source code for reproducibility.
-1.6 Contributions
-This paper makes the following contributions:
-Graph Construction Pipeline for UNSW-NB15 CSV (§3): a documented, reproducible procedure converting the UNSW-NB15 training/testing CSVs (which lack explicit src/dst IP and port columns) into attributed dynamic graphs using protocol–service–state tuples as pseudo-node identifiers.
-ST-GraphAD Architecture (§4): a Spatio-Temporal GNN combining a 3-layer GCN spatial encoder with a 2-layer, 4-head temporal attention module over sliding graph sequences.
-Rigorous Experimental Evaluation (§5–§6): node-level AUC-ROC and F1 comparison between ST-GraphAD and a static GCN baseline on identical graph sequences, with transparent reporting of graph-level metric failure due to label construction.
-Computational Analysis: parameter counts, training time, and memory footprint comparison.
-Limitations and Threats to Validity (§8): explicit enumeration of methodological weaknesses (pseudo-nodes, fixed windows, label availability, missing attack-category breakdown) to aid reviewer assessment.
-1.7 Paper Organization
-§2 surveys related work. §3 formalizes the dataset, preprocessing, graph construction, and problem definition. §4 details the ST-GraphAD architecture and training objective. §5 describes the experimental setup. §6 presents results with ablation and sensitivity analysis. §7 discusses interpretation and practical implications. §8 enumerates limitations and threats to validity. §9 concludes with future work.
+
+Network intrusion detection remains a critical cybersecurity challenge. The UNSW-NB15 dataset, created by the Australian Centre for Cyber Security, represents modern network traffic with nine attack categories: Generic, Exploits, Fuzzers, DoS, Reconnaissance, Analysis, Backdoors, Shellcode, and Worms. Traditional approaches treat each network flow independently, missing the relational context between communicating entities.
+
+Network traffic naturally forms a graph structure:
+- Nodes: IP addresses, ports, protocols (or proxy representations thereof)
+- Edges: Communication flows between entities
+- Temporal dynamics: Evolving communication patterns over time
+
+Graph Neural Networks (GNNs) can exploit this structure, but static GNNs ignore temporal evolution. Attack patterns often manifest as temporal sequences—reconnaissance followed by exploitation, or multi-stage lateral movement. We propose ST-GraphAD to capture both spatial and temporal dimensions.
+
+Contributions
+
+1. Graph Construction Pipeline: Converts UNSW-NB15 network flows into attributed graphs with pseudo-nodes (protocol-service-state tuples) and communication edges, with explicit documentation of the IP-address limitation.
+2. ST-GraphAD Architecture: Combines a 3-layer GCN spatial encoder with a 2-layer, 4-head temporal attention module over sliding windows of 5 graph snapshots.
+3. Rigorous Experimental Protocol: The original training CSV is split 85/15 into training/validation; the official test CSV is held out; preprocessing is fitted only on the training partition; node-level validation AUC drives model selection; evaluation is repeated over five seeds with mean±std reporting.
+4. Comprehensive Evaluation: Node-level AUC-ROC, F1, Precision, Recall on the untouched official test set; graph-level results reported with explicit caveats; computational complexity analysis; ablation study planned and documented.
+
+Paper Organization
+
+Section 2 reviews related work. Section 3 describes the dataset, preprocessing, and graph construction. Section 4 presents the ST-GraphAD framework. Section 5 details the experimental setup. Section 6 reports results. Section 7 discusses implications and failure cases. Section 8 enumerates limitations and threats to validity. Section 9 concludes.
+
 2. Related Work
+
 2.1 Network Intrusion Detection
-Table 1. Paradigms in Network Intrusion Detection
-Paradigm
-Representative Methods
-Key Limitation
-Signature-based
-Snort, Suricata, Zeek
-Zero-day blind; high false negatives on novel attacks
-Anomaly-based (classical ML)
-Random Forest, XGBoost, Isolation Forest, AE
-Ignores relational structure; per-flow independence assumption
-Deep learning (flow-sequence)
-CNN, LSTM, Transformer on flow features
-Treats flows as independent sequences; no cross-entity reasoning
-Graph-based (static)
-GCN, GAT, GraphSAGE on communication graphs
-No temporal modeling; single-snapshot inference
-Classical ML and deep flow-sequence methods achieve strong results on UNSW-NB15 (Table 2) but do not model inter-entity relationships.
-Table 2. Literature Benchmarks on UNSW-NB15 (flow-level classification, as reported in prior work)
-Model
-AUC
-F1
-Notes
-Random Forest
-0.89
-0.85
-Requires manual feature engineering
-XGBoost
-0.91
-0.87
-Gradient boosting on tabular features
-LSTM
-0.88
-0.84
-Sequential flow modeling
-GCN (static)
-0.85
-0.82
-Graph structure only, no temporal
-Note. 
-An earlier draft of this table listed aspirational ST-GraphAD figures (0.92 / 0.89). The actual experimental results are reported in §6 and differ (0.91 / 0.88). The literature benchmarks above are reported in prior publications on flow-level classification; they are not directly comparable to our node-level graph task.
-2.2 Graph Neural Networks for Cybersecurity
-Graph representations for security emerged with botnet detection (Zhang et al., 2019), lateral movement detection (Milajerdi et al., 2019), and malicious domain clustering. Static GNNs (GCN, GAT, GraphSAGE) dominate the literature. Few works incorporate temporal dynamics: TGAT (Xu et al., 2020) and TGN (Rossi et al., 2020) propose continuous-time temporal GNNs but have seen limited adoption in NIDS due to implementation complexity and the lack of public temporal graph benchmarks.
-2.3 Spatio-Temporal GNNs
-Spatio-temporal GNNs fall into two families: (1) discrete-time approaches, which slide windows, apply a spatial GNN per window, then a temporal model (RNN, Transformer, attention) across window embeddings; and (2) continuous-time approaches, which use event-level temporal encoding (TGAT, TGN, CAW). ST-GraphAD adopts the discrete-time paradigm for its simplicity, reproducibility, and alignment with the fixed-window graph sequences constructed from the CSV release.
-2.4 Research Gap Summary
-No prior work on UNSW-NB15 simultaneously (a) documents a reproducible graph construction from the CSV release without IP fields, (b) evaluates a temporal GNN against a static GNN on identical graph sequences, (c) reports node-level anomaly detection as the primary metric with honest disclosure of graph-level metric degeneracy, and (d) releases a complete training pipeline.
+
+Approach | Method | Limitation
+---|---|---
+Signature-based | Pattern matching (Snort, Suricata) | Cannot detect zero-day attacks
+Anomaly-based (ML) | Random Forest, XGBoost, Autoencoders | Ignores relational structure
+Deep Learning | CNN, LSTM on flow features | Treats flows independently
+Graph-based (static) | GCN, GAT on static graphs | Ignores temporal evolution
+
+2.2 Graph Neural Networks for Security
+
+- GraphSAGE (Hamilton et al., 2017): Inductive learning on graphs
+- GAT (Veličković et al., 2018): Attention-based neighbor aggregation
+- Temporal GNNs: TGAT (Xu et al., 2020), TGN (Rossi et al., 2020)
+- Security Applications: Botnet detection (Zhang et al., 2019), Lateral movement (Milajerdi et al., 2019)
+
+2.3 UNSW-NB15 Benchmark Results (Literature)
+
+Model | AUC | F1 | Notes
+---|---|---|---
+Random Forest | 0.89 | 0.85 | Feature engineering required
+XGBoost | 0.91 | 0.87 | Gradient boosting
+LSTM | 0.88 | 0.84 | Sequential flow modeling
+GCN (static) | 0.85 | 0.82 | Graph structure only
+ST-GraphAD (ours) | 0.657 ± 0.078 | 0.858 ± 0.021 | Spatial + Temporal (corrected, 5-seed)
+
+Note: Literature results often use different preprocessing, splits, and evaluation protocols. Direct comparison requires identical conditions.
+
+2.4 Research Gap
+
+Existing graph-based NIDS work predominantly uses static graphs, discarding temporal information critical for multi-stage attacks. Temporal GNNs (TGAT, TGN) have been applied to social networks and recommender systems but rarely to network intrusion detection with proper train/val/test splits and node-level evaluation. Furthermore, many studies report inflated results due to data leakage (preprocessing on combined data), test-set validation, or degenerate graph-level metrics from class imbalance.
+
 3. Dataset and Problem Formulation
+
 3.1 UNSW-NB15 Dataset
-UNSW-NB15 (Moustafa &amp; Slay, 2015) is a widely used NIDS benchmark generated by the Australian Centre for Cyber Security. It comprises nine attack categories: Generic, Exploits, Fuzzers, DoS, Reconnaissance, Analysis, Backdoors, Shellcode, and Worms. The public release provides two CSV files:
-Table 3. UNSW-NB15 CSV Release
-Split
-Flows
-Attack Categories
-Training (UNSW_NB15_training-set.csv)
-175,341
-All 9 categories
-Testing (UNSW_NB15_testing-set.csv)
-82,332
-All 9 categories
-Each flow record has 49 features including protocol (proto), service (service), connection state (state), packet/byte counts (spkts, dpkts, sbytes, dbytes), timing (dur, sinpkt, dinpkt), and connection-tracking features (ct_*), plus attack_cat (attack category name) and label (binary: 0 = normal, 1 = attack). Crucially, the CSV release does not contain source/destination IP addresses or port numbers.
+
+The UNSW-NB15 dataset contains network flows with 45 features per flow, including duration, protocol, service, state, packet/byte counts, and derived features (connection counts, time-to-live, etc.). The label column indicates normal (0) or attack (1); attack_cat specifies one of nine attack categories.
+
 3.2 Data Preprocessing
-Categorical encoding: proto, state, service, and attack_cat are label-encoded.
-Numerical scaling: 36 continuous features (duration, packet/byte statistics, timing, connection tracking) are standardized (zero mean, unit variance) using sklearn.preprocessing.StandardScaler fitted on the combined train + test set for consistent encoding.
-Pseudo-node construction (§3.3): since source/destination IP and port are absent, we synthesize node identifiers from available categorical fields.
+
+Categorical features (proto, state, service, attack_cat) are encoded with LabelEncoder. Numerical features (34 continuous columns) are scaled with StandardScaler. Critically, all encoders and scalers are fitted exclusively on the training partition (149,039 flows) and applied to validation and test partitions without refitting, preventing preprocessing leakage.
+
 3.3 Graph Construction
-3.3.1 Node Definition
-Let each flow f have categorical fields proto(f), service(f), and state(f). We define:
-srcip(f)  =  proto(f) ∥ service(f) ∥ “_src”
-dstip(f)  =  state(f) ∥ service(f) ∥ “_dst”
-sport(f)  =  proto(f) ∥ spkts(f)          dsport(f)  =  state(f) ∥ dpkts(f)
-where ∥ denotes string concatenation. All unique srcip and dstip values across the dataset form the node set V. Nodes are mapped to integer indices via LabelEncoder.
-Limitation flag. 
-This heuristic creates nodes that are protocol–service–state combinations, not real network entities. Multiple real IPs sharing the same protocol/service/state collapse into one pseudo-node. This limits the granularity of node-level detection and the realism of the communication graph.
-3.3.2 Edge Definition
-Each flow f generates a directed edge (srcip(f), dstip(f)). Edge attributes (not used in the current GCN encoder but retained for future work) include packet counts, byte counts, duration, and TCP flags.
-3.3.3 Node Feature Matrix (28-dimensional)
-For each node v ∈ V, we aggregate statistics over all incident flows (both as source and destination) within a time window:
-Table 4. Node Feature Composition
-Feature Group
-Description
-Dim.
-Source-side flow stats
-Mean of sbytes, dbytes, spkts, dpkts, sload, dload, dur, sttl, dttl, sloss, dloss
-11
-Destination-side flow stats
-Same 11 statistics for flows where v is destination
-11
-Categorical modes (source)
-Mode of proto_enc, state_enc, service_enc
-3
-Categorical modes (destination)
-Mode of proto_enc, state_enc, service_enc
-3
-Total
-28
-Node label y_v = max( 1[any source flow of v is attack], 1[any destination flow of v is attack] ).
-3.3.4 Temporal Graph Sequences
-The CSV lacks a timestamp column (Stime is absent). We impose a pseudo-temporal ordering using row index: the dataset is sorted by original row order, and a sliding window of 1,000 consecutive flows defines a graph snapshot G_t. Windows with fewer than 10 flows are discarded. This yields 176 temporal graphs for training (from 175,341 flows) and 83 temporal graphs for testing (from 82,332 flows). Each G_t = (V, E_t, X_t, y_t) shares the global node set V (180 nodes train, 175 test) but has window-specific edges E_t, features X_t, and labels y_t.
-Limitation flag. 
-Fixed 1,000-flow windows are arbitrary and may split a single attack campaign across windows or merge distinct campaigns. Real timestamps would enable event-driven or adaptive windowing.
-3.4 Formal Problem Definition
-Given a sequence of L consecutive graph snapshots S = [G_{t−L+1}, …, G_t], predict the node-level anomaly label vector ŷ_t ∈ [0,1]^|V_t| for the most recent snapshot G_t, where ŷ_{t,v} ≈ 1 indicates node v is involved in malicious communication. The graph-level label for S is defined as a majority vote over nodes in G_t:
-y_S = 1[ (1/|V_t|) Σ_v y_{t,v} &gt; 0.5 ]
+
+Node Definition
+
+The UNSW-NB15 CSV release does not provide explicit source/destination IP addresses. We construct pseudo-nodes from categorical combinations:
+
+srcip = proto + '_' + service + '_src
+dstip = state + '_' + service + '_dst
+
+This means each unique (protocol, service, role) tuple becomes a node. Multiple real hosts sharing the same tuple collapse to a single pseudo-node—a known limitation (§8).
+
+Edge Definition
+
+Each network flow creates an undirected edge between the corresponding source and destination pseudo-nodes. Edge attributes (packet counts, byte counts, duration, flags) are not currently used as features; this is future work.
+
+Node Features (28-dimensional)
+
+Per-node features are aggregated statistics over incident flows in each time window:
+[mean_sbytes, mean_dbytes, mean_spkts, mean_dpkts, mean_sload, mean_dload, mean_dur, mean_sttl, mean_dttl, mean_sloss, mean_dloss, proto_mode, state_mode, service_mode, src_mean_sbytes, src_mean_dbytes, ..., dst_mean_sloss, dst_mean_dloss]
+
+3.4 Temporal Graph Sequences
+
+Flows are split into pseudo-temporal windows of 1000 flows each (by row order in the CSV, not real timestamps). Each window produces a graph snapshot Gᵢ = (V, Eᵢ, Xᵢ). A sliding window of length L=5 forms a sequence S = [G_{t-4}, ..., G_t] for training. We note this is a pseudo-temporal ordering; no real timestamps are available in the CSV release.
+
+3.5 Formal Problem Definition
+
+Given a sequence of L consecutive graph snapshots S = [G_{t-L+1}, ..., G_t], predict the node-level anomaly label vector ŷ_t ∈ [0,1]^{|V_t|} for the most recent snapshot G_t, where ŷ_{t,v} ≈ 1 indicates node v is involved in malicious communication. The graph-level label for S is defined as majority vote over nodes in G_t: y_S = 𝟙[mean(y_t) > 0.5].
+
 4. Proposed ST-GraphAD Framework
+
 4.1 Overall Architecture
-ST-GraphAD processes a temporal sequence of L graph snapshots S = [G₁, …, G_L] through three stages:
-Spatial Encoder (shared across windows): a 3-layer GCN producing per-window node embeddings H^(l) ∈ R^{|V_l| × d}, d = 128.
-Temporal Encoder: a 2-layer multi-head self-attention module (4 heads, d = 128) with positional encoding, applied over the sequence of padded node embeddings, producing temporally enhanced embeddings H̃_L for the last window.
-Detection Heads: (a) graph-level — MLP(MeanPool(H̃_L)) → 2-class logits; (b) node-level — MLP(H̃_L) → per-node 2-class logits.
+
+ST-GraphAD processes a temporal sequence of L graph snapshots S = [G_1, ..., G_L] through three stages:
+
+1. Spatial Encoder (shared across windows): 3-layer GCN → per-window node embeddings H^{(l)} ∈ ℝ^{|V_l| × d}, d=128.
+2. Temporal Encoder: 2-layer Multi-Head Self-Attention (4 heads, d=128) with positional encoding, applied over the sequence of padded node embeddings → temporally enhanced embeddings H̃_L for the last window.
+3. Detection Heads: (a) Graph-level: MLP(MeanPool(H̃_L)) → 2-class logits; (b) Node-level: MLP(H̃_L) → per-node 2-class logits.
+
 4.2 Spatial Graph Encoder (GCN)
-The GCN encoder follows Kipf &amp; Welling (2017). For layer ℓ = 1 … L:
-H^(ℓ+1) = σ( D̃^(−1/2) Ã D̃^(−1/2) H^(ℓ) W^(ℓ) )
-where Ã = A + I (adjacency with self-loops), D̃ is the degree matrix of Ã, H^(0) = X, and σ is ReLU. Batch normalization and dropout (p = 0.5) are applied after each layer except the last. The output dimension is fixed at d = 128.
-4.3 Temporal Attention Module
-Given a sequence of L graph embeddings {H₁, …, H_L} where H_l ∈ R^{N_l × d} and N_l varies per window, we:
-Pad to the maximum node count N_max = max_l N_l: P_l = Pad(H_l) ∈ R^{N_max × d}, with a valid-node mask M_l ∈ {0,1}^{N_max}.
-Stack into a batch X ∈ R^{L × N_max × d} with mask M ∈ {0,1}^{L × N_max}.
-Add sinusoidal positional encoding (Vaswani et al., 2017) to inject temporal order.
-Apply K = 2 multi-head attention layers, each with residual connection and LayerNorm:
-Q = XW_Q,  K = XW_K,  V = XW_V
-Attention(Q,K,V) = softmax( QKᵀ / √d_k ) V
-MultiHead = Concat(head₁, …, head_h) W_O
-Extract the last window's embeddings for valid nodes: H̃_L = X′_{L, 1:N_L}.
-4.4 Classification Heads
-Graph-level (binary): MLP_graph(MeanPool(H̃_L)) ∈ R²
-Node-level (binary): MLP_node(H̃_L) ∈ R^{N_L × 2}
-Both MLPs: Linear(128→64) → ReLU → Dropout(0.5) → Linear(64→2).
+
+The GCN encoder follows Kipf & Welling (2017). For layer ℓ = 1...L:
+
+H^{(ℓ+1)} = σ(D̃^{-1/2} Ã D̃^{-1/2} H^{(ℓ)} W^{(ℓ)})
+
+where Ã = A + I (adjacency with self-loops), D̃ = degree matrix of Ã, L = 3 layers, hidden = 128, dropout = 0.5, batch norm after each layer except the last.
+
+4.3 Temporal Encoder: Multi-Head Attention
+
+Node embeddings from each window are padded to N_max = max_l |V_l|, forming a tensor X ∈ ℝ^{L × N_max × d}. A mask M ∈ {0,1}^{L × N_max} indicates valid nodes. Standard multi-head attention is applied:
+
+Q, K, V = X W_Q, X W_K, X W_V
+Attention(Q,K,V) = softmax(QK^⊤/√d_k) V
+MultiHead = Concat(head_1,...,head_h) W_O
+
+Two attention layers with residual connections and layer normalization. The output for the last window (H̃_L) is used for classification. The multi-head architecture provides capacity to model different temporal dependencies; however, head specialization was not quantitatively evaluated in the present study.
+
+4.4 Detection Heads
+
+Graph-level: MLP(MeanPool(H̃_L)) with hidden layer d/2, ReLU, dropout → 2 logits.
+Node-level: MLP(H̃_L) with hidden layer d/2, ReLU, dropout → per-node 2 logits.
+
 4.5 Loss Function
-The training objective combines graph-level and node-level cross-entropy:
-L = L_graph + λ·L_node,   λ = 0.5
-L_graph = CE(z_graph, y_S),   L_node = (1/N_L) Σ_v CE(z_{node,v}, y_{L,v})
-where z denotes logits and y denotes labels. Focal loss (Lin et al., 2017) is implemented as an option, but cross-entropy is used for all reported experiments.
+
+Combined graph-level and node-level cross-entropy:
+
+L = L_graph + λ L_node, λ = 0.5
+L_graph = CE(z_graph, y_S)
+L_node = (1/N_L) Σ_v CE(z_node,v, y_{L,v})
+
 4.6 Training Procedure
-Optimizer: Adam (lr = 10⁻³, weight decay 5×10⁻⁴)
-Scheduler: ReduceLROnPlateau (factor = 0.5, patience = 10, mode = max on validation graph AUC)
-Gradient clipping: ‖∇‖₂ ≤ 1.0
-Early stopping: patience 20 on validation graph AUC
-Max epochs: 100
-Sequence length: L = 5 (sliding window over temporal graphs)
-Max training sequences per epoch: 200 (randomly sampled)
-Device: CPU (MPS/CUDA not used due to compatibility; see §8)
+
+- Optimizer: Adam (lr=10⁻³, weight decay=5×10⁻⁴)
+- Scheduler: ReduceLROnPlateau (factor=0.5, patience=10, mode=max on validation node-level AUC-ROC)
+- Gradient clipping: ||∇||₂ ≤ 1.0
+- Early stopping: Patience 10 on validation node-level AUC-ROC
+- Max epochs: 50
+- Sequence length: L=5
+- Max training sequences/epoch: 200 (randomly sampled)
+- Device: CPU (Apple M4, 16 GB RAM)
+
 5. Experimental Setup
+
 5.1 Dataset Split
-The UNSW-NB15 release provides fixed train/test CSVs, which we use directly: training yields 175,341 flows → 176 temporal graphs, 180 nodes, 350,682 edges; testing yields 82,332 flows → 83 temporal graphs, 175 nodes, 164,664 edges. No further train/validation split is performed; validation uses the test temporal graphs (early stopping on test graph AUC). This is a threat to validity (§8).
+
+The UNSW-NB15 release provides fixed train/test CSVs. We split the training CSV into training/validation (85%/15% stratified by flow label), keeping the official test CSV untouched for final evaluation only:
+
+Split | Flows | Temporal Graphs | Nodes | Edges
+---|---|---|---|---
+Train | 149,039 | 150 | 178 | 298K
+Validation | 26,302 | 27 | 174 | 53K
+Test (official) | 82,332 | 83 | 172 | 165K
+
+All preprocessing (LabelEncoder, StandardScaler) is fitted on the training partition only and applied without refitting to validation and test partitions.
+
 5.2 Experimental Environment
-Table 5. Experimental Environment
-Component
-Specification
-CPU
-Apple M4 (ARM64)
-RAM
-16 GB
-OS
-macOS 15+
-Python
-3.12
-PyTorch
-2.13.0 (CPU)
-PyTorch Geometric
-2.8.0
-Training device
-CPU (MPS fallback not used due to tensor placement errors)
+
+Component | Specification
+---|---
+CPU | Apple M4 (ARM64)
+RAM | 16 GB
+OS | macOS 15+
+Python | 3.12
+PyTorch | 2.13.0 (CPU)
+PyTorch Geometric | 2.8.0
+
 5.3 Baselines
-Table 6. Model Variants Compared
-Model
-Description
-GCN-only
-3-layer GCN encoder + classification heads; no temporal attention; processes only the last window G_t
-ST-GraphAD (proposed)
-Full architecture: GCN + 2-layer temporal attention (4 heads) over L = 5 windows
-Both share an identical GCN encoder, classification heads, optimizer, scheduler, and training hyperparameters. The only difference is the temporal attention module.
+
+Model | Description
+---|---
+GCN-only | 3-layer GCN encoder + classification heads; no temporal attention; processes only the last window G_t
+ST-GraphAD (proposed) | Full architecture: GCN + 2-layer temporal attention (4 heads) over L=5 windows
+
+Both share identical GCN encoder, classification heads, optimizer, scheduler, and training hyperparameters. The only difference is the temporal attention module.
+
 5.4 Hyperparameters
-Table 7. Training Hyperparameters
-Hyperparameter
-Value
-Hidden channels (d)
-128
-GCN layers
-3
-Temporal attention layers
-2 (ST-GraphAD only)
-Attention heads
-4
-Dropout
-0.5
-Learning rate
-1 × 10⁻³
-Weight decay
-5 × 10⁻⁴
-Max epochs
-100
-Early stopping patience
-20
-Sequence length L
-5
-Max train sequences/epoch
-200
-Loss weight λ
-0.5
+
+Hyperparameter | Value
+---|---
+Hidden channels (d) | 128
+GCN layers | 3
+Temporal attention layers | 2 (ST-GraphAD only)
+Attention heads | 4
+Dropout | 0.5
+Learning rate | 1×10⁻³
+Weight decay | 5×10⁻⁴
+Max epochs | 50
+Early stopping patience | 10
+Sequence length L | 5
+Max train sequences/epoch | 200
+Loss weight λ | 0.5
+Seeds | 42, 123, 456, 789, 999
+
 5.5 Evaluation Metrics
-Primary (node-level): AUC-ROC, F1, precision, and recall on per-node binary labels in the last window of each test sequence.
-Secondary (graph-level): the same metrics on graph-level majority-vote labels, reported for completeness but known to be degenerate (§6.1).
+
+Primary (Node-level): AUC-ROC, F1, Precision, Recall on per-node binary labels (aggregated across all test sequences).
+Secondary (Graph-level): Same metrics on graph-level majority-vote labels. Reported for completeness but known to be degenerate (§6.1).
+
 6. Results
+
 6.1 Graph-Level Classification (Degenerate)
-Table 8. Graph-Level Results
-Model
-AUC-ROC
-F1
-Precision
-Recall
-GCN-only
-0.00
-1.00
-1.00
-1.00
-ST-GraphAD
-0.00
-0.00
-0.00
-0.00
-Explanation: the graph label is y_S = 1[mean(y_t) &gt; 0.5]. With ≈95% attack nodes in both train and test graphs, every graph snapshot receives label 1 (“Attack”). The classifier trivially learns to predict “Attack” always. AUC = 0.00 reflects single-class ground truth, not model failure. Graph-level metrics are not meaningful for this dataset/task formulation.
+
+Model | AUC-ROC | F1 | Precision | Recall
+---|---|---|---|---
+GCN-only | 0.00 | 1.00 | 1.00 | 1.00
+ST-GraphAD | 0.00 | 0.00 | 0.00 | 0.00
+
+Explanation: The graph label is y_S = 𝟙[mean(y_t) > 0.5]. With approximately 88% attack nodes in temporal graphs, almost every graph snapshot receives label 1 ("Attack"). The classifier trivially learns to predict "Attack" always. AUC=0.00 reflects single-class ground truth, not model failure. Graph-level F1/Precision/Recall of 1.00 likewise reflect trivial majority prediction, not model quality. Graph-level metrics are not meaningful for this dataset/task formulation and are not used for model selection.
+
 6.2 Node-Level Anomaly Detection (Primary Task)
-Table 9. Node-Level Results
-Model
-AUC-ROC
-F1
-Precision
-Recall
-GCN-only
-0.87
-0.84
-0.86
-0.82
-ST-GraphAD
-0.91
-0.88
-0.89
-0.87
-ST-GraphAD improves node-level AUC by +4.6% and F1 by +4.8% over the static GCN baseline when both models are evaluated on identical graph sequences under a single training run per model. This is the paper's central empirical result, but it should be read as indicative rather than conclusive: with one seed per configuration, we cannot rule out that part of the gap reflects run-to-run variance rather than the temporal attention mechanism itself. §6.4 provides ablation evidence consistent with the attention module driving the improvement, and §8.1 identifies the absence of multiple seeds as a specific threat to the reliability of this estimate.
-6.3 Training Dynamics
-Table 10. Training Loss and Early Stopping
-Model
-Epoch 0 Loss
-Epoch 10 Loss
-Early Stop Epoch
-GCN-only
-0.68
-0.13
-19
-ST-GraphAD
-1.12
-1.01
-19
-ST-GraphAD exhibits higher training loss due to the additional temporal attention parameters (~4.2M vs. ~180K) and the more complex optimization landscape. Both models stop at epoch 19 (patience = 20, no validation graph AUC improvement). Validation graph AUC plateaus at 0.00 for both models, consistent with the degenerate graph-level labels described in §6.1.
-6.4 Ablation Study
-We ablate the temporal attention module while keeping all other settings identical:
-Table 11. Ablation of the Temporal Attention Module
-Variant
-Node AUC
-Δ AUC
-Node F1
-Δ F1
-ST-GraphAD (full)
-0.91
-—
-0.88
-—
-No temporal attention (GCN-only)
-0.87
-−0.04
-0.84
-−0.04
-1 attention head
-0.89
-−0.02
-0.86
-−0.02
-4 temporal layers
-0.90
-−0.01
-0.87
-−0.01
-Sequence length L = 10
-0.92
-+0.01
-0.89
-+0.01
-Clarification. 
-The ablation variants were trained in separate runs with the same hyperparameters except for the noted change. Results are from actual experiments, not hypothetical projections; each variant reflects a single run, so the magnitudes below should be read as directional rather than statistically established.
-Observed pattern: (1) removing temporal attention returns performance to the GCN-only level, which is consistent with — though on this evidence alone does not conclusively prove — the temporal module driving the gain; (2) four heads outperform one head (+2% AUC); (3) two temporal layers appear sufficient, with four layers slightly degrading performance, plausibly due to overfitting on a comparatively small graph-sequence dataset; (4) longer sequences (L = 10) yield a marginal further improvement at a higher memory cost. Confirming these patterns with multiple seeds is listed as a required follow-up experiment (§6.7 note; Reviewer Readiness Check).
-6.5 Hyperparameter Sensitivity
-Table 12. Hyperparameter Sensitivity (measured by node-level AUC variance)
-Hyperparameter
-Values Tested
-Best
-Sensitivity
-Hidden channels d
-64, 128, 256
-128
-Medium
-GCN layers
-2, 3, 4
-3
-Low
-Temporal layers
-1, 2, 3
-2
-Low
-Attention heads
-2, 4, 8
-4
-Low
-Sequence length L
-3, 5, 10
-5
-Medium
-Dropout
-0.3, 0.5, 0.7
-0.5
-Medium
-Sensitivity is defined as: “low” = under 0.01 AUC change; “medium” = 0.01–0.02 AUC change.
+
+The five-seed aggregate below is the principal result of this study. Values are mean ± standard deviation over five random seeds (42, 123, 456, 789, 999), 50 epochs each, identical configuration.
+
+| Model | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|-----|-----------|--------|
+| GCN-only | 0.612 ± 0.030 | 0.836 ± 0.013 | 0.789 ± 0.015 | 0.889 ± 0.023 |
+| ST-GraphAD | 0.657 ± 0.078 | 0.858 ± 0.021 | 0.791 ± 0.022 | 0.939 ± 0.037 |
+
+Absolute improvements of ST-GraphAD over GCN (mean to mean):
+- AUC-ROC: +4.5 percentage points (0.657 − 0.612 = 0.045)
+- F1: +2.2 percentage points (0.858 − 0.836 = 0.022)
+- Precision: +0.2 percentage points (0.791 − 0.789 = 0.002)
+- Recall: +5.0 percentage points (0.939 − 0.889 = 0.050)
+
+Interpretation: ST-GraphAD shows higher mean node-level AUC, F1, and recall than the static GCN baseline. However, the larger standard deviation of ST-GraphAD (AUC std 0.078 vs. 0.030; recall std 0.037 vs. 0.023) indicates greater sensitivity to initialization, so the observed improvement should not be interpreted as universally established without further statistical testing. No statistical significance test was performed in this study.
+
+6.3 Reference Single-Seed Result (seed=42, 50 epochs)
+
+For reproducibility reference, the result of the seed=42 run (which is included in the five-seed aggregate above) is:
+
+| Model | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|-----|-----------|--------|
+| GCN-only | 0.573 | 0.842 | 0.782 | 0.913 |
+| ST-GraphAD | 0.678 | 0.829 | 0.790 | 0.872 |
+
+This single-seed row is provided for traceability; the five-seed aggregate in §6.2 is the authoritative headline result. The two are not averaged or merged.
+
+6.4 Training Dynamics (per-seed, 50 epochs; representative)
+
+Training is driven by node-level validation AUC-ROC for early stopping. Validation node AUC reaches approximately 0.97–0.99 for both models across seeds; ST-GraphAD tends to converge to a marginally higher best validation node AUC (e.g., 0.985 vs. 0.972 for seed=42). Best-epoch checkpoints are selected by validation node AUC, never by graph-level metrics.
+
+6.5 Ablation Study (Planned, Not Executed)
+
+No ablation variants were actually run in the present study. We document the planned ablation design for future work and explicitly state that no numerical ablation results are reported:
+
+Planned variants to evaluate with five seeds each:
+- No temporal attention (reverts to GCN-only — already available as the baseline)
+- 1 vs. 4 vs. 8 attention heads
+- 1 vs. 2 vs. 3 temporal layers
+- Sequence length L ∈ {3, 5, 10}
+- Hidden dimension d ∈ {64, 128, 256}
+
+Reporting unexecuted ablation values as findings would be fabrication; therefore this section contains no results.
+
 6.6 Computational Complexity
-Table 13. Computational Cost Comparison
-Model
-Parameters
-Train Time (100 ep)
-Peak Memory
-GCN-only
-~180K
-~45 sec
-~230 MB
-ST-GraphAD
-~4.2M
-~120 sec
-~5.9 GB
-ST-GraphAD requires 23× more parameters and 26× more memory than the GCN baseline, primarily due to the temporal attention module's projection matrices and the padded sequence tensor (L × N_max × d). Training time is 2.7× slower. For deployment, model distillation or attention pruning may be necessary.
+
+Runtimes below are from the final 5-seed, 50-epoch experiment (128 hidden channels, 3 GCN layers).
+
+Model | Parameters | Train Time (50 ep, seed=42) | Peak CPU Memory
+---|---|---|---
+GCN-only | ~180K | ~10 sec | ~300 MB
+ST-GraphAD | ~4.2M | ~86 sec | ~1.2 GB
+
+ST-GraphAD requires ~23× more parameters and ~4× more memory than the GCN baseline, primarily due to the temporal attention module's projection matrices and the padded sequence tensor (L × N_max × d). Training time is ~8.6× slower (50-epoch run). For deployment, model distillation or attention pruning may be necessary.
+
+Note: A separate exploratory run used a larger configuration (256 hidden channels, 4 GCN layers, 200 epochs) producing different absolute runtimes (GCN ~114 s, ST-GraphAD ~593 s). Those values belong to a different configuration and are not used as the headline computational numbers above.
+
 6.7 Attack-Category Analysis
-Missing experiment. 
-The current implementation evaluates only binary node-level labels (attack vs. normal). A per-attack-category breakdown (Generic, Exploits, Fuzzers, DoS, Reconnaissance, Analysis, Backdoors, Shellcode, Worms) was not implemented. This is a significant gap; different attack types may exhibit distinct temporal signatures (e.g., periodic C2 for Backdoors vs. bursty scanning for Reconnaissance).
+
+Per-attack-category node-level evaluation was not implemented in the current study and remains future work. The node labels are binary (attack vs. normal) and the attack_cat field is only available at flow level, which is lost during node aggregation. We do not claim superior performance on Generic, Exploits, Fuzzers, DoS, Reconnaissance, Analysis, Backdoors, Shellcode, or Worms individually.
+
 7. Discussion
-7.1 Why Temporal Modeling Helps
-A plausible explanation for the AUC gain is that temporal attention lets the model condition the current window's node representations on preceding windows, rather than scoring each snapshot in isolation. In network traffic, several attack stages plausibly leave temporal footprints that a single-window model cannot access:
-Reconnaissance → exploitation: a node that appeared in a scanning window (high out-degree, diverse destinations) and then initiates a suspicious connection in the current window could receive a higher anomaly score under this mechanism.
-Periodic beaconing: nodes with recurring communication patterns at regular intervals across windows could be flagged by attention heads sensitive to periodicity.
-Lateral movement: a previously benign node that suddenly communicates with a compromised node in the current window could receive an elevated score via attention to that node's recent history.
-We emphasize that this is a mechanistic hypothesis motivated by the architecture and the aggregate AUC/F1 gain, not a claim verified by direct evidence. We did not perform per-head attribution or case-level inspection of individual attack sequences in this study; any statement to that effect would go beyond what the current experiments support. Head-level specialization and attack-stage attribution are listed as required future work (§7.2, §9.2).
+
+7.1 Why Temporal Modeling May Help
+
+The positive mean AUC and recall improvement from temporal attention (multi-seed) is consistent with the model's design: conditioning the current window's node representations on preceding windows. In network traffic, attack stages may leave temporal footprints:
+
+- Reconnaissance → Exploitation: A node that appeared in a scanning window (high out-degree, diverse destinations) and then initiates a suspicious connection in the current window may receive higher anomaly scores.
+- Periodic beaconing: Nodes with recurring communication patterns at regular intervals across windows may be flagged by the attention mechanism.
+- Lateral movement: A previously benign node that suddenly communicates with a compromised node in the current window may get elevated scores through attention to the compromised node's history.
+
+These are design rationales and qualitative expectations; the present study does not contain case-level or attention-based evidence establishing that ST-GraphAD detects any specific multi-stage attack sequence.
+
 7.2 Interpretation of Attention
-The architecture produces attention weights A ∈ R^{L×L} (aggregated over heads and nodes) that, in principle, indicate the model's temporal focus and could support a “preparatory phase” hypothesis in which windows preceding an attack receive elevated attention. We did not extract or analyze these weights in the present study, so no attention-based finding is reported here. Systematic attention visualization and quantitative analysis (e.g., attention entropy, head-specialization metrics, correlation with attack-stage labels) remain future work (§9.2) and are a precondition for any claim about what the attention mechanism has learned.
+
+Attention weights A ∈ ℝ^{L×L} (aggregated over heads and nodes) show the model's temporal focus. We did not perform quantitative attention analysis (entropy, head specialization metrics) in this study. Claims about which temporal patterns particular heads capture are not supported by experiments in this work and remain future work.
+
 7.3 Practical Cybersecurity Implications
-Node-level scoring for triage: ST-GraphAD outputs per-node anomaly probabilities. Security analysts can prioritize investigation of high-scoring hosts.
-Temporal context for threat hunting: attention weights reveal which historical windows influenced the current alert, enabling timeline reconstruction.
-Inductive generalization: the GCN encoder is inductive—it can embed unseen nodes (new pseudo-IP combinations) without retraining, supporting streaming deployment.
-CPU compatibility: the model trains and runs on CPU (no GPU required), lowering operational barriers.
+
+1. Node-level scoring for triage: ST-GraphAD outputs per-node anomaly probabilities. Security analysts can prioritize investigation of high-scoring IPs/hosts.
+2. Temporal context for threat hunting: The temporal attention module provides a mechanism to attribute the current alert to historical windows, enabling timeline reconstruction (qualitative; not quantitatively validated here).
+3. Inductive generalization: The GCN encoder is inductive—it can embed unseen nodes (new pseudo-IP combinations) without retraining, supporting streaming deployment.
+4. CPU compatibility: The model trains and runs on CPU (no GPU required), lowering operational barriers.
+
 7.4 Failure Cases
-Table 14. Observed Failure Modes and Mitigations
-Failure Mode
-Cause
-Mitigation (Future)
-Single-flow attacks (e.g., volumetric DoS)
-No temporal history; one window
-Hybrid: combine ST-GraphAD with per-flow statistical detectors
-Encrypted traffic
-Payload features unavailable; flow stats may be insufficient
-Incorporate TLS fingerprinting (JA3), packet timing side-channels
-Graph-level label degeneracy
-95% attack ratio → all graphs = “Attack”
-Use node-level labels as primary; reformulate as graph regression (predict attack proportion)
-Pseudo-node collision
-Multiple real IPs → same pseudo-node
-Parse PCAP for real IPs; use heterogeneous graphs
+
+Failure Mode | Cause | Mitigation (Future)
+---|---|---
+Single-flow attacks (e.g., volumetric DoS) | No temporal history; one window | Hybrid: combine ST-GraphAD with per-flow statistical detectors
+Encrypted traffic | Payload features unavailable; flow stats may be insufficient | Incorporate TLS fingerprinting (JA3), packet timing side-channels
+Graph-level label degeneracy | ~88% attack ratio → all graph labels "Attack" | Use node-level metrics only; graph-level regression
+Pseudo-node collision | Multiple real IPs → same pseudo-node | Parse PCAP for real IPs; use heterogeneous graphs
+
 8. Limitations and Threats to Validity
+
 8.1 Internal Validity Threats
-Table 15. Internal Validity Threats
-#
-Threat
-Severity
-Mitigation / Disclosure
-1
-Pseudo-node construction
-High
-Nodes are protocol–service–state tuples, not real IPs. Multiple real hosts collapse. Graph structure is a proxy, not ground-truth communication topology.
-2
-Fixed 1,000-flow windows
-High
-Arbitrary granularity; may split/merge attack campaigns. No timestamp alignment.
-3
-Test set used for validation
-Medium
-Early stopping monitors test graph AUC (degenerate). No held-out validation set. Reported test metrics may be optimistically biased.
-4
-No per-attack-category evaluation
-Medium
-Binary labels only. Cannot claim superiority on specific attack types.
-5
-No attention visualization
-Medium
-Claims about attention interpreting attack stages are qualitative/unverified.
-6
-Class imbalance at graph level
-High
-Graph-level metrics invalid. Paper reports them only with an explicit caveat.
-7
-Random sequence sampling
-Low
-Max 200 train sequences/epoch sampled randomly; run-to-run variance not reported.
+
+# | Threat | Severity | Status / Mitigation
+---|---|---|---
+1 | Pseudo-node construction | High | Unfixed. Nodes are protocol-service-state tuples, not real IPs. Multiple real hosts collapse. Graph structure is a proxy.
+2 | Pseudo-temporal ordering | High | Unfixed. Windows derived from CSV row order, not real timestamps; may split/merge attack campaigns.
+3 | Fixed 1000-flow windows | Medium | Unfixed. Arbitrary granularity; no timestamp alignment.
+4 | No per-attack-category evaluation | Medium | Unfixed. Binary node labels only; attack_cat lost during aggregation. Flagged as gap.
+5 | No attention visualization | Medium | Unfixed. Claims about attention interpreting attack stages are qualitative/unverified.
+6 | Class imbalance at graph level | High | Mitigated. Graph-level metrics reported with explicit caveat; node-level AUC used for all model selection.
+7 | Preprocessing leakage | High | Mitigated. LabelEncoder/StandardScaler fit on training partition only, applied to val/test without refitting.
+8 | Single-class AUC handling | Medium | Fixed. AUC = None (not 0.0) when a partition contains only one class; NaN handled in scheduler.
+9 | Variance across runs | Medium | Addressed. Five-seed evaluation with mean±std reported.
+10 | Flow partition / pseudo-node overlap | Medium | See §8.4. Pseudo-node identifiers may recur across partitions; this is distinct from flow-level overlap and is not automatically leakage.
+
 8.2 External Validity Threats
-Table 16. External Validity Threats
-#
-Threat
-Discussion
-1
-UNSW-NB15 CSV limitations
-Real network traffic has IPs, ports, and timestamps. Our graph construction is dataset-specific.
-2
-Single dataset
-Results may not generalize to CICIDS2017, CSE-CIC-IDS2018, or enterprise traffic.
-3
-Binary labels only
-Real NIDS often needs multi-class (attack category) or severity scoring.
-4
-CPU-only training
-MPS/CUDA errors prevented GPU training. Larger models/hyperparameter searches were infeasible.
+
+# | Threat | Discussion
+---|---|---
+1 | UNSW-NB15 CSV limitations | Real network traffic has IPs, ports, timestamps. Our graph construction is dataset-specific.
+2 | Single dataset | Results may not generalize to CICIDS2017, CSE-CIC-IDS2018, or enterprise traffic.
+3 | Binary labels only | Real NIDS often needs multi-class (attack category) or severity scoring.
+4 | CPU-only training | MPS/CUDA errors prevented GPU training. Larger models/hyperparameter searches were infeasible.
+5 | Higher variance of ST-GraphAD | ST-GraphAD shows AUC std 0.078 vs GCN 0.030. Sensitivity to initialization is a deployment concern.
+
 8.3 Construct Validity Threats
-Table 17. Construct Validity Threats
-#
-Threat
-Discussion
-1
-Node label derivation
-y_v = max(source flows, destination flows) labels a node “Attack” if any incident flow is attack. This may over-label benign nodes that happen to receive one malicious packet.
-2
-Graph label = majority vote
-With 95% attack nodes, this is degenerate. Alternative: graph-level regression (predict attack proportion).
-3
-Sequence label = last window label
-Assumes the last window is representative of the whole sequence.
+
+# | Threat | Discussion
+---|---|---
+1 | Node label derivation | y_v = max(source flows, dest flows) labels a node "Attack" if any incident flow is attack. This may over-label benign nodes that happen to receive one malicious packet.
+2 | Graph label = majority vote | With ~88% attack nodes, this is degenerate. Alternative: graph-level regression (predict attack proportion).
+3 | Sequence label = last window label | Assumes the last window is representative of the sequence.
+
+8.4 Note on Partition Independence and Pseudo-Node Identifiers
+
+The flow records are partitioned into training, validation, and official test sets by flow index, and a sanity check confirms no flow index is shared across partitions. However, the same pseudo-node identifier (constructed from categorical attributes) may legitimately occur across partitions because multiple flows—even across splits—can share the same protocol/service/state tuple. This identifier recurrence is not equivalent to overlap of the underlying flow records and must not be described as data leakage. The relevant leakage-control guarantee is that preprocessing transformations (LabelEncoder, StandardScaler) are fitted using training flows only and subsequently applied to validation and test data without refitting; no validation or test label is used for training, checkpoint selection, scheduler control, or early stopping.
+
 9. Conclusion and Future Work
+
 9.1 Conclusion
+
 We presented ST-GraphAD, a Spatio-Temporal Graph Neural Network for network intrusion detection on the UNSW-NB15 dataset. ST-GraphAD constructs dynamic attributed graphs from flow records (using a documented pseudo-node heuristic necessitated by the CSV release format), encodes spatial communication patterns via a 3-layer GCN, and models temporal attack evolution via a 2-layer, 4-head attention mechanism over sliding windows of 5 graph snapshots.
-On node-level anomaly detection—the primary task—ST-GraphAD achieves 0.91 AUC-ROC and 0.88 F1, outperforming a static GCN baseline (0.87 AUC, 0.84 F1) by +4.6% AUC and +4.8% F1. Graph-level evaluation is confounded by the dataset's extreme class imbalance (≈95% attack nodes), rendering graph-level AUC = 0.00 for both models—a dataset artifact, not a model failure.
-The framework trains in approximately 2 minutes on CPU (Apple M4), requires approximately 5.9 GB of memory, and is released as open-source PyTorch Geometric code.
+
+On node-level anomaly detection—the primary task—under the corrected protocol (training CSV split 85/15 for train/validation, official test CSV held out, preprocessing fitted on training only, node-level validation AUC for early stopping and model selection, five-seed evaluation), ST-GraphAD achieves 0.657 ± 0.078 AUC-ROC and 0.858 ± 0.021 F1, compared to a static GCN baseline of 0.612 ± 0.030 AUC and 0.836 ± 0.013 F1. The mean AUC improvement is 4.5 percentage points absolute; the mean recall improvement is 5.0 percentage points absolute. ST-GraphAD exhibits higher variance (AUC std 0.078 vs 0.030), so the improvement is reported as a measured mean difference, not as a statistically established effect. Graph-level evaluation remains confounded by class imbalance (~88% attack nodes in temporal graphs), yielding AUC=0.00 for both models—a dataset artifact, not a model failure.
+
+The framework trains in roughly 10–90 seconds per seed on CPU (Apple M4, 16 GB), requires ~1.2 GB memory, and is released as open-source PyTorch Geometric code.
+
 9.2 Future Work
-Real IP-based graph construction: parse PCAP files to extract true source/destination IPs and ports, eliminating the pseudo-node heuristic.
-Continuous-time temporal GNNs: adopt TGN or CAW for event-level temporal modeling, removing fixed-window discretization.
-Heterogeneous graphs: model IPs, ports, protocols, and services as distinct node types with relation-specific edges.
-Self-supervised pre-training: masked flow reconstruction or contrastive learning on unlabeled traffic to reduce labeled-data requirements.
-Per-attack-category evaluation: implement multi-class node classification and category-wise AUC/F1 reporting.
-Attention interpretability: systematic attention visualization, head ablation, and entropy analysis for analyst-facing explanations.
-Online/incremental learning: streaming graph updates without full retraining.
-Adversarial robustness: evaluate against graph-structure and feature-space evasion attacks.
-Reproducibility Statement
-All reported figures correspond to actual runs of the ST-GraphAD codebase (branch feat/st-graphad, commit 5de52b2) on the public UNSW-NB15 CSV release, under the environment and hyperparameters listed in §5.2 and §5.4. Each model configuration in §6.2 and §6.4 reflects a single training run rather than an average over multiple seeds; §8.1 records this as an explicit threat to validity, and §9.2 lists multi-seed evaluation as required follow-up work before the effect sizes reported here should be treated as stable estimates. No results, citations, or numerical claims in this manuscript are fabricated or extrapolated from unrun experiments; where an analysis was not performed (e.g., attention visualization, per-attack-category breakdown), this is stated explicitly rather than implied. The complete data-preprocessing, graph-construction, training, and evaluation pipeline is intended for open release to allow independent verification of every number reported.
+
+1. Real IP-based graph construction: Parse PCAP files to extract true source/destination IPs and ports, eliminating the pseudo-node heuristic.
+2. Continuous-time temporal GNNs: Adopt TGN or CAW for event-level temporal modeling, removing fixed-window discretization.
+3. Heterogeneous graphs: Model IPs, ports, protocols, and services as distinct node types with relation-specific edges.
+4. Self-supervised pre-training: Masked flow reconstruction or contrastive learning on unlabeled traffic to reduce labeled data needs.
+5. Per-attack-category evaluation: Implement multi-class node classification and category-wise AUC/F1 reporting.
+6. Attention interpretability: Systematic attention visualization, head ablation, and entropy analysis for analyst-facing explanations.
+7. Online/incremental learning: Streaming graph updates without full retraining.
+8. Adversarial robustness: Evaluate against graph-structure and feature-space evasion attacks.
+9. Statistical evaluation: Paired significance testing (e.g., McNemar, Wilcoxon) across seeds to establish whether the observed improvement is significant.
+
 References
-[1]  Moustafa, N., &amp; Slay, J. (2015). UNSW-NB15: a comprehensive data set for network intrusion detection systems. Military Communications and Information Systems Conference (MilCIS).
-[2]  Kipf, T. N., &amp; Welling, M. (2017). Semi-supervised classification with graph convolutional networks. ICLR.
-[3]  Veličković, P., et al. (2018). Graph attention networks. ICLR.
-[4]  Hamilton, W., Ying, Z., &amp; Leskovec, J. (2017). Inductive representation learning on large graphs. NeurIPS.
-[5]  Vaswani, A., et al. (2017). Attention is all you need. NeurIPS.
-[6]  Xu, D., et al. (2020). Inductive representation learning on temporal graphs. ICLR (TGAT).
-[7]  Rossi, E., et al. (2020). Temporal graph networks for deep learning on dynamic graphs. ICML Workshop.
-[8]  Zhang, Y., et al. (2019). Botnet detection based on graph convolutional networks. IEEE Access.
-[9]  Milajerdi, S. M., et al. (2019). HOLMES: real-time APT detection through correlation of suspicious information flows. IEEE Symposium on Security and Privacy.
-[10]  Lin, T.-Y., et al. (2017). Focal loss for dense object detection. ICCV.
-Appendix A: Architecture Diagram (Suggested Figure 1)
-+-------------------------------------------------------------------------+
-| ST-GraphAD Forward Pass                                                 |
-+-------------------------------------------------------------------------+
-| Input: Sequence of L=5 graph snapshots  [G1, G2, G3, G4, G5]            |
-|                                                                         |
-|   [G1: (V,E1,X1,y1)]   [G2: (V,E2,X2,y2)]   ...   [G5: (V,E5,X5)]       |
-|            \                    |                       /               |
-|             \                   |                      /                |
-|              v                  v                     v                 |
-|   +-------------------------------------------------------------+       |
-|   |            SHARED 3-LAYER GCN ENCODER                       |       |
-|   |   H(l+1) = sigma( D~^-1/2 A~ D~^-1/2 H(l) W(l) )             |       |
-|   +------------------------------+--------------------------------+     |
-|                                  |                                      |
-|        [H1] [H2] [H3] [H4] [H5]   (Hl in R^{Nl x 128})                 |
-|                                  |                                      |
-|                                  v                                      |
-|   +-------------------------------------------------------------+       |
-|   |   TEMPORAL ATTENTION (2 layers, 4 heads)                    |       |
-|   |   - Pad to N_max, add positional encoding                   |       |
-|   |   - MultiHead(Q,K,V) with residual + LayerNorm              |       |
-|   +------------------------------+--------------------------------+     |
-|                                  |                                      |
-|                                  v                                      |
-|   +-------------------------------------------------------------+       |
-|   |   DETECTION HEADS (on last window G5)                       |       |
-|   |   Graph-level: MLP(MeanPool(H5)) -&gt; R^2  (Normal/Attack)    |       |
-|   |   Node-level:  MLP(H5) -&gt; R^{N5 x 2}  (per-node scores)     |       |
-|   +-------------------------------------------------------------+       |
-+-------------------------------------------------------------------------+
-Figure 1. ST-GraphAD architecture. A shared 3-layer GCN encodes each graph snapshot in a temporal sequence. Padded node embeddings pass through a 2-layer, 4-head temporal attention module with positional encoding. The final window's temporally enhanced embeddings feed graph-level (mean-pooled) and node-level classification heads.
-Appendix B: Pseudo-Code for Graph Construction (Suggested Listing 1)
-def construct_graphs_from_unsw_csv(csv_path, window_size=1000):
-    &quot;&quot;&quot;
-    Convert UNSW-NB15 CSV (no IPs) into a temporal graph sequence.
-    Args:
-        csv_path: Path to UNSW_NB15_training-set.csv or _testing-set.csv
-        window_size: Number of flows per temporal window
-    Returns:
-        List[Data]: PyG Data objects, one per time window
-    &quot;&quot;&quot;
-    df = pd.read_csv(csv_path, names=UNSW_FEATURES, header=0)
-    # 1. Encode categorical features
-    for cat in ['proto', 'state', 'service', 'attack_cat']:
-        df[f'{cat}_enc'] = LabelEncoder().fit_transform(df[cat].astype(str))
-    # 2. Construct pseudo-node identifiers (HEURISTIC - see Sec. 3.3.1)
-    df['srcip'] = df['proto'].astype(str) + '_' + df['service'].astype(str) + '_src'
-    df['dstip'] = df['state'].astype(str) + '_' + df['service'].astype(str) + '_dst'
-    # 3. Encode nodes
-    ip_encoder = LabelEncoder().fit(pd.concat([df['srcip'], df['dstip']]))
-    df['srcip_enc'] = ip_encoder.transform(df['srcip'])
-    df['dstip_enc'] = ip_encoder.transform(df['dstip'])
-    # 4. Scale numerical features
-    df[NUMERICAL_FEATURES] = StandardScaler().fit_transform(df[NUMERICAL_FEATURES])
-    # 5. Create pseudo-temporal windows by row order
-    df['window_id'] = (df.index // window_size).astype(str)
-    graphs = []
-    for window_id, wdf in df.groupby('window_id'):
-        if len(wdf) &lt; 10:
-            continue
-        # 6. Aggregate node features (source + destination stats)
-        src_feats = wdf.groupby('srcip_enc').agg({...})
-        dst_feats = wdf.groupby('dstip_enc').agg({...})
-        x, y, node_ids = merge_and_tensorize(src_feats, dst_feats)
-        # 7. Build edges from flows
-        edge_index = build_edges(wdf, node_ids)
-        graphs.append(Data(x=x, edge_index=edge_index, y=y))
-    return graphs
-Listing 1. Graph construction pipeline. The pseudo-node heuristic (Step 2) is the primary approximation; real deployments should replace it with PCAP-derived IPs.
-Appendix C: Additional Experimental Details
-C.1 Training Curves (Suggested Figure 2)
-Table 18. Suggested Training-Curve Plots
-Plot
-Description
-Fig. 2a
-Training loss vs. epoch for GCN-only and ST-GraphAD
-Fig. 2b
-Validation graph AUC vs. epoch (both flat at 0.00)
-Fig. 2c
-Validation node AUC vs. epoch (ST-GraphAD converges higher)
-C.2 Confusion Matrices
-Table 19. Node-Level Confusion Matrices (Test Set, Aggregated)
-Model
-TN
-FP
-FN
-TP
-GCN-only
-1,402
-248
-1,892
-12,456
-ST-GraphAD
-1,510
-140
-1,684
-12,664
-Appendix D: Submission Readiness Assessment
-This appendix is a self-assessment of the manuscript against the standards expected at a peer-reviewed venue. It is included deliberately, in the interest of transparency, rather than omitted in favor of a more polished-looking submission. It should be read alongside §8 (Limitations and Threats to Validity) and is intended to guide revision before submission, not to substitute for it.
-Major Strengths
-Reproducible graph construction: the paper documents exactly how UNSW-NB15 CSV (without IPs) is converted to graphs, including the pseudo-node heuristic. This transparency is rare in graph-based NIDS literature.
-Fair baseline comparison: ST-GraphAD and GCN-only share identical encoders, heads, optimizers, and graph sequences. The only difference is the temporal attention module.
-Honest metric reporting: graph-level AUC = 0.00 is explicitly explained as a label construction artifact, not hidden or spun as success.
-Primary task clarity: node-level anomaly detection is designated the primary metric, matching the operational use case of prioritizing suspicious hosts.
-Computational transparency: parameter counts, memory, and training time are reported for both models.
-Open-source release: the complete training pipeline is available.
-Major Weaknesses
-Pseudo-node construction is a severe approximation: nodes are (proto, ser
-vice, state) tuples, not real network entities. This fundamentally limits the realism of the communication graph and the granularity of node-level detection. The paper must not claim to model “IP-level” or “host-level” interactions.
-Test set used for validation: early stopping monitors test graph AUC (degenerate). No held-out validation set exists, so reported test metrics may be optimistically biased. Recommendation: re-run with a proper train/val/test split from the training CSV.
-No per-attack-category evaluation: binary labels only, so it is not possible to assess whether ST-GraphAD excels on specific attack types (e.g., Reconnaissance vs. DoS). This is a standard expectation for UNSW-NB15 papers.
-Attention interpretation claims are qualitative: statements about attention revealing temporal patterns and head specialization lack quantitative support (no attention entropy, no head ablation with statistical significance, no visualization).
-Ablation study is limited: only four variants are tested. Missing: positional-encoding ablation, alternative attention mechanisms (e.g., cross-window vs. self-attention), and comparison to RNN/Transformer temporal baselines.
-Hyperparameter sensitivity lacks statistical rigor: a single run per configuration, with no confidence intervals or multiple seeds.
-Missing Experiments (Required for Acceptance at a Top Venue)
-Table 20. Missing Experiments and Priority
-Experiment
-Priority
-Reason
-Proper train/val/test split (e.g., 70/15/15 from the training CSV)
-Critical
-Current setup uses the test set for early stopping; results may not generalize.
-Per-attack-category node-level AUC/F1
-Critical
-Standard for UNSW-NB15; reviewers will expect it.
-Multiple random seeds (5–10) with mean ± std
-High
-Single-run results are unreliable for neural models.
-Comparison to temporal baselines (LSTM on node embeddings, TGAT-lite)
-High
-Must show attention outperforms simpler temporal models.
-Attention weight analysis (entropy, head specialization, visualization)
-Medium
-Required to substantiate interpretability claims.
-Real-timestamp experiment (if PCAP available)
-Medium
-Would validate or discredit the 1,000-flow window heuristic.
-Graph-level regression (predict attack proportion)
-Low
-Would rescue graph-level evaluation.
-Potential Reviewer Objections
-Table 21. Anticipated Objections and Response Strategy
-Objection
-Response Strategy
-“Pseudo-nodes invalidate the graph structure.”
-Acknowledge in §8; frame as a proof-of-concept on the available CSV release; propose PCAP-based construction as immediate future work.
-“Graph-level AUC = 0 means the model doesn't work.”
-Clearly state in the abstract, §6.1, and §8 that graph labels are degenerate by construction and node-level is the valid task.
-“No comparison to flow-based SOTA (XGBoost, etc.).”
-Clarify the task difference: flow-level classification (prior work) vs. node-level anomaly scoring (this work) — different granularity, different labels.
-“Test set used for validation = data leakage.”
-Re-run with a proper split before submission; report both the old and new numbers.
-“4.2M parameters for 0.91 AUC is overparameterized.”
-Report parameter-efficient variants (distillation, pruning); note CPU compatibility as a deployment advantage.
-“Attention claims are not substantiated.”
-Remove unquantified claims or add attention-analysis experiments.
-Claims Needing Stronger Evidence
-Table 22. Claims vs. Evidence
-Claim
-Current Evidence
-Required Evidence
-Temporal attention detects reconnaissance → exploitation sequences
-Qualitative only
-Attention-weight correlation with attack-stage labels; case studies
-Multi-head attention learns specialized temporal patterns
-Speculative
-Head ablation + attention entropy per head; visualization
-Inductive generalization to unseen IPs
-Theoretical (GCN is inductive)
-Hold out node types during training; evaluate on them
-ST-GraphAD scales to real traffic
-CPU timing on 180-node graphs
-Runtime/memory on 10K–100K-node graphs; mini-batch sampling strategy
-+4.6% AUC is statistically significant
-Single run
-Multiple seeds + confidence intervals; paired t-test vs. GCN
+
+1. Moustafa, N., & Slay, J. (2015). UNSW-NB15: a comprehensive data set for network intrusion detection systems. Military Communications and Information Systems Conference (MilCIS).
+2. Kipf, T. N., & Welling, M. (2017). Semi-Supervised Classification with Graph Convolutional Networks. ICLR.
+3. Veličković, P., et al. (2018). Graph Attention Networks. ICLR.
+4. Hamilton, W., Ying, Z., & Leskovec, J. (2017). Inductive Representation Learning on Large Graphs. NeurIPS.
+5. Vaswani, A., et al. (2017). Attention Is All You Need. NeurIPS.
+6. Xu, D., et al. (2020). Inductive Representation Learning on Temporal Graphs. ICLR (TGAT).
+7. Rossi, E., et al. (2020). Temporal Graph Networks for Deep Learning on Dynamic Graphs. ICML Workshop.
+8. Zhang, Y., et al. (2019). Botnet Detection based on Graph Convolutional Networks. IEEE Access.
+9. Milajerdi, S. M., et al. (2019). HOLMES: Real-Time APT Detection through Correlation of Suspicious Information Flows. IEEE S&P.
+10. Lin, T.-Y., et al. (2017). Focal Loss for Dense Object Detection. ICCV.

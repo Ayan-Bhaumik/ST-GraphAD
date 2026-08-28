@@ -335,24 +335,33 @@ def generate_report(results: Dict, config: Dict, save_path: str = 'results/repor
         for key, value in config.items():
             f.write(f"- **{key}**: {value}\n")
 
-        f.write("\n## Results Comparison\n\n")
+        f.write("\n## Results Comparison (Node-Level)\n\n")
         f.write("| Metric | GCN-only | ST-GNN | Improvement |\n")
         f.write("|--------|----------|--------|-------------|\n")
 
-        metrics = ['graph_auc', 'graph_f1', 'graph_precision', 'graph_recall']
+        for model_type in ['gcn', 'stgnn']:
+            if model_type not in results:
+                continue
+
+        metrics = ['node_auc', 'node_f1', 'node_precision', 'node_recall']
         for metric in metrics:
-            gcn = results['gcn']['final_metrics'].get(metric, 0)
-            stgnn = results['stgnn']['final_metrics'].get(metric, 0)
+            gcn = results['gcn']['test_metrics'].get(metric, 0) if 'gcn' in results else 0
+            stgnn = results['stgnn']['test_metrics'].get(metric, 0) if 'stgnn' in results else 0
             imp = ((stgnn - gcn) / gcn * 100) if gcn > 0 else 0
             f.write(f"| {metric} | {gcn:.4f} | {stgnn:.4f} | {imp:+.1f}% |\n")
 
-        if 'node_auc' in results['stgnn']['final_metrics']:
-            f.write("\n### Node-Level Metrics (ST-GNN)\n\n")
-            f.write("| Metric | Value |\n")
-            f.write("|--------|-------|\n")
-            for metric in ['node_auc', 'node_f1', 'node_precision', 'node_recall']:
-                val = results['stgnn']['final_metrics'].get(metric, 0)
-                f.write(f"| {metric} | {val:.4f} |\n")
+        f.write("\n## Detailed Results\n\n")
+        for model_type in ['gcn', 'stgnn']:
+            if model_type not in results:
+                continue
+            r = results[model_type]
+            tm = r['test_metrics']
+            f.write(f"\n### {model_type.upper()}\n\n")
+            f.write(f"- Best validation epoch: {r['best_epoch']}\n")
+            f.write(f"- Best validation node AUC: {r['best_val_auc']:.4f}\n")
+            f.write(f"- Runtime: {r['runtime']:.1f}s\n")
+            f.write(f"- Test confusion matrix: {tm.get('confusion_matrix', 'N/A')}\n")
+            f.write(f"- Positive samples: {tm.get('n_positive', 0)}, Negative samples: {tm.get('n_negative', 0)}\n")
 
         f.write("\n## Visualizations\n\n")
         f.write("![Training Curves](training_curves.png)\n\n")

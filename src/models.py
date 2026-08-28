@@ -299,9 +299,11 @@ class GCNOnly(nn.Module):
         )
 
     def forward(self, graph, return_node_scores: bool = False) -> dict:
-        # Handle both single graph and list of graphs (for compatibility)
+        # Handle both single graph and list of graphs
+        # For temporal training, graph is a list of Data objects (sequence)
+        # We should use the LAST graph in the sequence for node-level prediction
         if isinstance(graph, list):
-            graph = graph[0]
+            graph = graph[-1]  # Use last graph for node-level labels
         embeddings = self.gcn_encoder(graph.x, graph.edge_index)
 
         graph_embedding = embeddings.mean(dim=0, keepdim=True)
