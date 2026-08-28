@@ -1,6 +1,6 @@
 """
 UNSW-NB15 Dataset Loader and Preprocessor
-Handles downloading, loading, and converting network flows to graph structures.
+Handles loading, and converting network flows to graph structures with proper train/val/test splits.
 """
 
 import os
@@ -9,8 +9,7 @@ import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 import torch
-from torch_geometric.data import Data, Dataset
-from torch_geometric.utils import dense_to_sparse
+from torch_geometric.data import Data
 import networkx as nx
 from tqdm import tqdm
 import warnings
@@ -27,61 +26,7 @@ UNSW_FEATURES = [
     'is_sm_ips_ports', 'attack_cat', 'label'
 ]
 
-# Map our internal names to CSV names
-FEATURE_MAP = {
-    'srcip': 'id',  # We don't have srcip in this CSV, use id as placeholder
-    'sport': None,   # Not in this CSV
-    'dstip': None,   # Not in this CSV
-    'dsport': None,  # Not in this CSV
-    'proto': 'proto',
-    'state': 'state',
-    'dur': 'dur',
-    'sbytes': 'sbytes',
-    'dbytes': 'dbytes',
-    'sttl': 'sttl',
-    'dttl': 'dttl',
-    'sloss': 'sloss',
-    'dloss': 'dloss',
-    'service': 'service',
-    'Sload': 'sload',
-    'Dload': 'dload',
-    'Spkts': 'spkts',
-    'Dpkts': 'dpkts',
-    'swin': 'swin',
-    'dwin': 'dwin',
-    'stcpb': 'stcpb',
-    'dtcpb': 'dtcpb',
-    'smeansz': 'smean',
-    'dmeansz': 'dmean',
-    'trans_depth': 'trans_depth',
-    'res_bdy_len': 'response_body_len',
-    'Sjit': 'sjit',
-    'Djit': 'djit',
-    'Stime': None,
-    'Ltime': None,
-    'Sintpkt': 'sinpkt',
-    'Dintpkt': 'dinpkt',
-    'tcprtt': 'tcprtt',
-    'synack': 'synack',
-    'ackdat': 'ackdat',
-    'is_sm_ips_ports': 'is_sm_ips_ports',
-    'ct_state_ttl': 'ct_state_ttl',
-    'ct_flw_http_mthd': 'ct_flw_http_mthd',
-    'is_ftp_login': 'is_ftp_login',
-    'ct_ftp_cmd': 'ct_ftp_cmd',
-    'ct_srv_src': 'ct_srv_src',
-    'ct_srv_dst': 'ct_srv_dst',
-    'ct_dst_ltm': 'ct_dst_ltm',
-    'ct_src_ltm': 'ct_src_ltm',
-    'ct_src_dport_ltm': 'ct_src_dport_ltm',
-    'ct_dst_sport_ltm': 'ct_dst_sport_ltm',
-    'ct_dst_src_ltm': 'ct_dst_src_ltm',
-    'attack_cat': 'attack_cat',
-    'label': 'label'
-}
-
 CATEGORICAL_FEATURES = ['proto', 'state', 'service', 'attack_cat']
-# Use CSV column names for numerical features
 NUMERICAL_FEATURES = [
     'dur', 'spkts', 'dpkts', 'sbytes', 'dbytes', 'rate', 'sttl', 'dttl',
     'sload', 'dload', 'sloss', 'dloss', 'sinpkt', 'dinpkt', 'sjit', 'djit',
@@ -92,21 +37,6 @@ NUMERICAL_FEATURES = [
     'ct_flw_http_mthd', 'ct_src_ltm', 'ct_srv_dst', 'is_sm_ips_ports'
 ]
 
-# UNSW-NB15 dataset URLs (multiple mirrors)
-UNSW_URLS = {
-    'train': [
-        'https://raw.githubusercontent.com/unsw-nb15/dataset/master/UNSW_NB15_training-set.csv',
-        'https://github.com/unsw-nb15/dataset/raw/master/UNSW_NB15_training-set.csv',
-        'https://cloudstor.aarnet.edu.au/plus/s/2DhnLGDdEECo4ys/download'  # Official UNSW CloudStor
-    ],
-    'test': [
-        'https://raw.githubusercontent.com/unsw-nb15/dataset/master/UNSW_NB15_testing-set.csv',
-        'https://github.com/unsw-nb15/dataset/raw/master/UNSW_NB15_testing-set.csv',
-        'https://cloudstor.aarnet.edu.au/plus/s/2DhnLGDdEECo4ys/download'  # Official UNSW CloudStor
-    ]
-}
-
-# Alternative: Using the CSV files from the official source
 UNSW_LOCAL_FILES = {
     'train': 'UNSW_NB15_training-set.csv',
     'test': 'UNSW_NB15_testing-set.csv'
@@ -114,42 +44,21 @@ UNSW_LOCAL_FILES = {
 
 
 class UNSWNB15Loader:
-    """Load and preprocess UNSW-NB15 dataset."""
+    """Load and preprocess UNSW-NB15 dataset with proper train/val/test splits."""
 
-    def __init__(self, data_dir='data', download=True):
+    def __init__(self, data_dir='data', download=True, val_split=0.15, seed=42):
         self.data_dir = data_dir
         self.download = download
+        self.val_split = val_split
+        self.seed = seed
+
+        # Encoders/scalers (fitted on TRAINING DATA ONLY)
         self.label_encoders = {}
         self.scaler = StandardScaler()
         self.ip_encoder = LabelEncoder()
         self.port_encoder = LabelEncoder()
 
         os.makedirs(data_dir, exist_ok=True)
-
-    def download_dataset(self):
-        """Download UNSW-NB15 dataset if not present."""
-        import urllib.request
-
-        for split, urls in UNSW_URLS.items():
-            filepath = os.path.join(self.data_dir, UNSW_LOCAL_FILES[split])
-            if not os.path.exists(filepath):
-                print(f"Downloading {split} dataset...")
-                success = False
-                for url in urls:
-                    try:
-                        urllib.request.urlretrieve(url, filepath)
-                        print(f"Downloaded to {filepath} from {url}")
-                        success = True
-                        break
-                    except Exception as e:
-                        print(f"  Failed from {url}: {e}")
-                        continue
-
-                if not success:
-                    print(f"All download attempts failed for {split}.")
-                    print("Please manually download the dataset from:")
-                    print("https://www.unsw.adfa.edu.au/unsw-canberra-cyber/cybersecurity/ADFA-NB15-Datasets/")
-                    print(f"Place files in: {self.data_dir}/")
 
     def load_raw_data(self):
         """Load raw CSV files."""
@@ -174,51 +83,91 @@ class UNSWNB15Loader:
         return not first_line.split(',')[0].replace('.', '').isdigit()
 
     def preprocess(self, train_df, test_df):
-        """Preprocess data: encode categorical, scale numerical."""
-        # Combine for consistent encoding
-        combined = pd.concat([train_df, test_df], ignore_index=True)
-
-        # This CSV doesn't have srcip/dstip/sport/dsport
-        # We'll create pseudo-IPs from the 'id' column for graph construction
-        # Use 'id' as a unique flow identifier, and create source/dest from proto/state/service combos
-        # For graph construction, we'll use protocol+service+state as node identifiers
-
-        # Encode categorical features
+        """
+        Preprocess data: encode categorical, scale numerical.
+        IMPORTANT: Fit encoders/scalers on TRAINING data only, then apply to test.
+        """
+        # Encode categorical features on TRAINING data
         for cat_feat in CATEGORICAL_FEATURES:
-            if cat_feat in combined.columns:
+            if cat_feat in train_df.columns:
                 le = LabelEncoder()
-                combined[f'{cat_feat}_enc'] = le.fit_transform(combined[cat_feat].astype(str))
+                train_df[f'{cat_feat}_enc'] = le.fit_transform(train_df[cat_feat].astype(str))
                 self.label_encoders[cat_feat] = le
 
-        # Create pseudo source/dest IPs from categorical combinations
-        # This allows us to build a graph structure
-        combined['srcip'] = combined['proto'].astype(str) + '_' + combined['service'].astype(str) + '_src'
-        combined['dstip'] = combined['state'].astype(str) + '_' + combined['service'].astype(str) + '_dst'
-        combined['sport'] = combined['proto'].astype(str) + '_' + combined['spkts'].astype(str)
-        combined['dsport'] = combined['state'].astype(str) + '_' + combined['dpkts'].astype(str)
+        # Apply to test data
+        for cat_feat in CATEGORICAL_FEATURES:
+            if cat_feat in test_df.columns and cat_feat in self.label_encoders:
+                le = self.label_encoders[cat_feat]
+                # Handle unseen categories in test
+                test_df[f'{cat_feat}_enc'] = test_df[cat_feat].astype(str).apply(
+                    lambda x: le.transform([x])[0] if x in le.classes_ else -1
+                )
 
-        # Encode IP addresses
-        all_ips = pd.concat([combined['srcip'], combined['dstip']]).unique()
+        # Create pseudo source/dest IPs from categorical combinations (on BOTH)
+        for df in [train_df, test_df]:
+            df['srcip'] = df['proto'].astype(str) + '_' + df['service'].astype(str) + '_src'
+            df['dstip'] = df['state'].astype(str) + '_' + df['service'].astype(str) + '_dst'
+            df['sport'] = df['proto'].astype(str) + '_' + df['spkts'].astype(str)
+            df['dsport'] = df['state'].astype(str) + '_' + df['dpkts'].astype(str)
+
+        # Encode IP addresses on TRAINING data
+        all_ips = pd.concat([train_df['srcip'], train_df['dstip']]).unique()
         self.ip_encoder.fit(all_ips)
-        combined['srcip_enc'] = self.ip_encoder.transform(combined['srcip'])
-        combined['dstip_enc'] = self.ip_encoder.transform(combined['dstip'])
+        train_df['srcip_enc'] = self.ip_encoder.transform(train_df['srcip'])
+        train_df['dstip_enc'] = self.ip_encoder.transform(train_df['dstip'])
 
-        # Encode ports
-        all_ports = pd.concat([combined['sport'], combined['dsport']]).unique()
+        # Apply to test data (handle unseen IPs)
+        test_df['srcip_enc'] = test_df['srcip'].apply(
+            lambda x: self.ip_encoder.transform([x])[0] if x in self.ip_encoder.classes_ else -1
+        )
+        test_df['dstip_enc'] = test_df['dstip'].apply(
+            lambda x: self.ip_encoder.transform([x])[0] if x in self.ip_encoder.classes_ else -1
+        )
+
+        # Encode ports on TRAINING data
+        all_ports = pd.concat([train_df['sport'], train_df['dsport']]).unique()
         self.port_encoder.fit(all_ports)
-        combined['sport_enc'] = self.port_encoder.transform(combined['sport'])
-        combined['dsport_enc'] = self.port_encoder.transform(combined['dsport'])
+        train_df['sport_enc'] = self.port_encoder.transform(train_df['sport'])
+        train_df['dsport_enc'] = self.port_encoder.transform(train_df['dsport'])
 
-        # Scale numerical features
-        num_cols = [c for c in NUMERICAL_FEATURES if c in combined.columns]
-        combined[num_cols] = self.scaler.fit_transform(combined[num_cols])
+        # Apply to test data
+        test_df['sport_enc'] = test_df['sport'].apply(
+            lambda x: self.port_encoder.transform([x])[0] if x in self.port_encoder.classes_ else -1
+        )
+        test_df['dsport_enc'] = test_df['dsport'].apply(
+            lambda x: self.port_encoder.transform([x])[0] if x in self.port_encoder.classes_ else -1
+        )
 
-        # Split back
-        train_size = len(train_df)
-        train_processed = combined.iloc[:train_size].copy()
-        test_processed = combined.iloc[train_size:].copy()
+        # Scale numerical features on TRAINING data
+        num_cols = [c for c in NUMERICAL_FEATURES if c in train_df.columns]
+        train_df[num_cols] = self.scaler.fit_transform(train_df[num_cols])
 
-        return train_processed, test_processed
+        # Apply to test data
+        test_num_cols = [c for c in num_cols if c in test_df.columns]
+        test_df[test_num_cols] = self.scaler.transform(test_df[test_num_cols])
+
+        return train_df, test_df
+
+    def split_train_val(self, train_df, val_split=None, seed=None):
+        """Split training data into train/validation sets (stratified by label)."""
+        if val_split is None:
+            val_split = self.val_split
+        if seed is None:
+            seed = self.seed
+
+        # Split by flows (not nodes) to maintain temporal structure
+        train_flows, val_flows = train_test_split(
+            train_df, test_size=val_split, random_state=seed, stratify=train_df['label']
+        )
+
+        train_flows = train_flows.reset_index(drop=True)
+        val_flows = val_flows.reset_index(drop=True)
+
+        print(f"Train/Val split: {len(train_flows)} train flows, {len(val_flows)} val flows")
+        print(f"  Train label dist: {train_flows['label'].value_counts().to_dict()}")
+        print(f"  Val label dist: {val_flows['label'].value_counts().to_dict()}")
+
+        return train_flows, val_flows
 
     def create_node_features(self, df):
         """Create node feature matrix from flow data."""
@@ -230,7 +179,7 @@ class UNSWNB15Loader:
             'proto_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
             'state_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
             'service_enc': lambda x: x.mode()[0] if len(x) > 0 else 0,
-            'label': 'max'  # If any flow from this IP is attack, mark as attack
+            'label': 'max'
         }).reset_index()
 
         dst_features = df.groupby('dstip_enc').agg({
@@ -258,38 +207,6 @@ class UNSWNB15Loader:
 
         return x, y, node_features['node_id'].values
 
-    def create_temporal_graphs(self, df, time_window='1H'):
-        """Create a sequence of graphs over time windows."""
-        df = df.copy()
-        # This CSV doesn't have Stime - create pseudo-temporal windows based on row order
-        # We'll use row index as pseudo-time for demonstration
-        df['pseudo_time'] = range(len(df))
-        # Create bins based on row index (e.g., 1000 rows per window)
-        window_size = 1000
-        df['time_window'] = (df['pseudo_time'] // window_size).astype(str) + '_window'
-
-        graphs = []
-        for window, window_df in df.groupby('time_window'):
-            if len(window_df) < 10:  # Skip windows with too few flows
-                continue
-
-            x, y, node_ids = self.create_node_features(window_df)
-
-            # Create edges from flows
-            edge_index = self.create_edges(window_df, node_ids)
-
-            if edge_index.shape[1] == 0:
-                continue
-
-            # Create PyG Data object
-            data = Data(x=x, edge_index=edge_index, y=y)
-            data.time_window = window
-            data.num_nodes = x.shape[0]
-
-            graphs.append(data)
-
-        return graphs
-
     def create_edges(self, df, node_ids):
         """Create edge index from flow data."""
         node_to_idx = {nid: idx for idx, nid in enumerate(node_ids)}
@@ -298,7 +215,7 @@ class UNSWNB15Loader:
         for _, row in df.iterrows():
             src_idx = node_to_idx.get(row['srcip_enc'])
             dst_idx = node_to_idx.get(row['dstip_enc'])
-            if src_idx is not None and dst_idx is not None:
+            if src_idx is not None and dst_idx is not None and src_idx != -1 and dst_idx != -1:
                 edges.append([src_idx, dst_idx])
                 edges.append([dst_idx, src_idx])  # Undirected
 
@@ -318,27 +235,77 @@ class UNSWNB15Loader:
 
         return data
 
+    def create_temporal_graphs(self, df, window_size=1000):
+        """Create a sequence of graphs over pseudo-temporal windows based on row order."""
+        df = df.copy()
+        # Create pseudo-temporal windows using row index
+        df['pseudo_time'] = range(len(df))
+        df['time_window'] = (df['pseudo_time'] // window_size).astype(str) + '_window'
+
+        graphs = []
+        for window, window_df in df.groupby('time_window'):
+            if len(window_df) < 10:  # Skip windows with too few flows
+                continue
+
+            x, y, node_ids = self.create_node_features(window_df)
+            edge_index = self.create_edges(window_df, node_ids)
+
+            if edge_index.shape[1] == 0:
+                continue
+
+            # Also store attack_cat for per-category evaluation
+            attack_cats = window_df['attack_cat'].values
+
+            data = Data(x=x, edge_index=edge_index, y=y)
+            data.time_window = window
+            data.num_nodes = x.shape[0]
+            data.attack_cats = attack_cats
+
+            graphs.append(data)
+
+        return graphs
+
     def get_data(self):
-        """Main entry point to get processed data."""
+        """Main entry point to get processed data with train/val/test split."""
         train_df, test_df = self.load_raw_data()
+
+        # Preprocess: fit on train, transform test
         train_processed, test_processed = self.preprocess(train_df, test_df)
 
-        # Create static graphs for train and test
-        train_graph = self.create_static_graph(train_processed)
-        test_graph = self.create_static_graph(test_processed)
+        # Split train into train/val
+        train_flows, val_flows = self.split_train_val(train_processed)
 
-        # Create temporal graphs
-        train_temporal = self.create_temporal_graphs(train_processed)
-        test_temporal = self.create_temporal_graphs(test_processed)
+        # Create temporal graphs for each split
+        window_size = 1000
+        train_temporal = self.create_temporal_graphs(train_flows, window_size)
+        val_temporal = self.create_temporal_graphs(val_flows, window_size)
+        test_temporal = self.create_temporal_graphs(test_processed, window_size)
+
+        # Also create static graphs (using all flows in each split)
+        train_static = self.create_static_graph(train_flows)
+        val_static = self.create_static_graph(val_flows)
+        test_static = self.create_static_graph(test_processed)
+
+        print(f"\n=== Graph Statistics ===")
+        print(f"Train temporal graphs: {len(train_temporal)}")
+        print(f"Val temporal graphs: {len(val_temporal)}")
+        print(f"Test temporal graphs: {len(test_temporal)}")
+        print(f"Train static nodes: {train_static.num_nodes}, edges: {train_static.num_edges}")
+        print(f"Val static nodes: {val_static.num_nodes}, edges: {val_static.num_edges}")
+        print(f"Test static nodes: {test_static.num_nodes}, edges: {test_static.num_edges}")
+        print(f"Node features: {train_static.x.shape[1]}")
 
         return {
-            'train_static': train_graph,
-            'test_static': test_graph,
+            'train_static': train_static,
+            'val_static': val_static,
+            'test_static': test_static,
             'train_temporal': train_temporal,
+            'val_temporal': val_temporal,
             'test_temporal': test_temporal,
-            'train_df': train_processed,
+            'train_df': train_flows,
+            'val_df': val_flows,
             'test_df': test_processed,
-            'num_node_features': train_graph.x.shape[1],
+            'num_node_features': train_static.x.shape[1],
             'num_classes': 2,
             'ip_encoder': self.ip_encoder,
             'port_encoder': self.port_encoder,
@@ -347,17 +314,16 @@ class UNSWNB15Loader:
         }
 
 
-def load_unsw_nb15(data_dir='data', download=True):
+def load_unsw_nb15(data_dir='data', download=True, val_split=0.15, seed=42):
     """Convenience function to load UNSW-NB15 dataset."""
-    loader = UNSWNB15Loader(data_dir=data_dir, download=download)
+    loader = UNSWNB15Loader(data_dir=data_dir, download=download, val_split=val_split, seed=seed)
     return loader.get_data()
 
 
 if __name__ == '__main__':
     # Test loading
     data = load_unsw_nb15(download=False)
-    print(f"Train graph: {data['train_static']}")
-    print(f"Test graph: {data['test_static']}")
     print(f"Train temporal graphs: {len(data['train_temporal'])}")
+    print(f"Val temporal graphs: {len(data['val_temporal'])}")
     print(f"Test temporal graphs: {len(data['test_temporal'])}")
     print(f"Node features: {data['num_node_features']}")

@@ -1,40 +1,53 @@
-# Spatio-Temporal Graph Neural Network for Network Intrusion Detection
+# ST-GraphAD: Spatio-Temporal Graph Neural Network for Network Intrusion Detection on UNSW-NB15
 
-A PyTorch-based implementation of a Spatio-Temporal Graph Neural Network (ST-GNN) for
-network intrusion detection on the UNSW-NB15 dataset. The system converts network flows
-into graph structures and uses Graph Convolutional Networks (GCN) combined with temporal
-attention mechanisms to detect anomalies.
+A PyTorch Geometric implementation of ST-GraphAD, a Spatio-Temporal Graph Neural Network for network intrusion detection on the UNSW-NB15 dataset. The system converts network flows into dynamic attributed graphs and uses a 3-layer Graph Convolutional Network (GCN) combined with a 2-layer, 4-head temporal attention mechanism to detect anomalies.
+
+## Key Results (Five-Seed Aggregate, Node-Level)
+
+| Model | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|-----|-----------|--------|
+| GCN-only | 0.612 ± 0.030 | 0.836 ± 0.013 | 0.789 ± 0.015 | 0.889 ± 0.023 |
+| **ST-GraphAD** | **0.657 ± 0.078** | **0.858 ± 0.021** | **0.791 ± 0.022** | **0.939 ± 0.037** |
+
+**Improvements (mean to mean):**
+- AUC-ROC: +4.5 percentage points
+- F1: +2.2 percentage points
+- Recall: +5.0 percentage points
+
+Graph-level evaluation is degenerate (~88% attack nodes → majority-vote graph label is "Attack") and is not the primary task.
 
 ## Architecture
 
 ```
-Network Flows → Graph Construction → GCN Spatial Encoding → Temporal Attention → Classification
-   (UNSW-NB15)    (adjacency matrix)   (node embeddings)     (sequence modeling)   (anomaly score)
+Network Flows → Pseudo-Node Graph Construction → 3-Layer GCN Spatial Encoding → 2-Layer Temporal Attention (4 heads) → Node/Graph Classification
+   (UNSW-NB15)     (protocol-service-state tuples)        (128 hidden dims)           (sequence length 5)              (anomaly scores)
 ```
 
 ### Components
 
-1. **Graph Construction**: Network flows (source IP, dest IP, ports) are converted to a
-   graph adjacency matrix where nodes are IP addresses and edges represent communication.
+1. **Graph Construction**: Network flows are converted to graphs where nodes are pseudo-IPs derived from (protocol, service, role) tuples (because the UNSW-NB15 CSV lacks explicit IP addresses) and edges represent communication flows. This is a documented limitation, not a hidden assumption.
 
-2. **GCN Encoder**: Graph Convolutional Network extracts spatial features from the graph
-   structure, capturing communication patterns between network entities.
+2. **GCN Encoder**: 3-layer Graph Convolutional Network (128 hidden channels, batch norm, dropout=0.5) extracts spatial features from each time window's graph structure.
 
-3. **Temporal Attention**: Multi-head attention mechanism models temporal dependencies
-   across time windows, allowing the model to detect evolving attack patterns.
+3. **Temporal Attention**: 2-layer Multi-Head Self-Attention (4 heads, 128 dimensions) with positional encoding models temporal dependencies across a sliding window of 5 graph snapshots.
 
-4. **Classifier**: Predicts anomaly scores for graph-level and node-level detection.
+4. **Classification Heads**: 
+   - Graph-level: MLP over mean-pooled final window embeddings
+   - Node-level: MLP over final window node embeddings (primary task)
 
 ## Features
 
-- ✅ UNSW-NB15 dataset loading and preprocessing
-- ✅ Flow-to-graph conversion with multiple node features
-- ✅ GCN-only baseline
-- ✅ ST-GNN (GCN + Temporal Attention)
-- ✅ Comprehensive evaluation (AUC-ROC, F1-score, Precision, Recall)
-- ✅ Model comparison (GCN vs ST-GNN)
-- ✅ Multiple visualizations (ROC, t-SNE, attention weights, graph structure)
-- ✅ Model checkpointing and evaluation report
+- ✅ UNSW-NB15 dataset loading and preprocessing with **no leakage** (encoders/scalers fit on training partition only)
+- ✅ Flow-to-graph conversion with pseudo-node construction
+- ✅ GCN-only baseline (3 layers, 128 hidden, no temporal attention)
+- ✅ ST-GraphAD (full architecture: GCN + temporal attention)
+- ✅ **Proper train/validation/test split**: 85/15 from training CSV + official test CSV held out
+- ✅ Node-level validation AUC-ROC for early stopping and model selection
+- ✅ **Five-seed evaluation** (42, 123, 456, 789, 999) with mean±std reporting
+- ✅ Comprehensive metrics (AUC-ROC, F1, Precision, Recall) at node level
+- ✅ Graph-level metrics reported with explicit degeneracy caveat
+- ✅ Model checkpointing and evaluation reports
+- ✅ Computational complexity analysis
 
 ## Installation
 
@@ -52,234 +65,134 @@ pip install --upgrade pip
 pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cpu
 
 # Install other dependencies
-pip install -r requirements.txt
-```
-
-**For Apple Silicon (M1/M2/M3/M4) with GPU acceleration (MPS):**
-```bash
-# PyTorch with MPS support comes with standard install on macOS 12.3+ (PyTorch 2.0+)
-pip install torch torch-geometric
-
-# Verify MPS is available
-python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"
-```
-
-**Troubleshooting M4 / Apple Silicon:**
-
-If you encounter issues on M4, try these steps:
-
-```bash
-# 1. Ensure you're on Python 3.10+ (M4 requires 3.10+)
-python --version
-
-# 2. Update pip and setuptools
-pip install --upgrade pip setuptools wheel
-
-# 3. Install with no cache (avoids corrupted wheels)
-pip install --no-cache-dir torch torch-geometric
-
-# 4. If torch-geometric fails, install PyG dependencies first
-pip install --no-cache-dir pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.4.0+cpu.html
-pip install torch-geometric
-
-# 5. Alternative: Use conda (often more reliable on Apple Silicon)
-conda create -n st-graphad python=3.11
-conda activate st-graphad
-conda install pytorch torchvision torchaudio -c pytorch
-conda install pyg -c pyg
-conda install pandas numpy scikit-learn matplotlib networkx scipy tqdm
-```
-
-**Common M4 Issues & Fixes:**
-
-| Error | Solution |
-|-------|----------|
-| `ModuleNotFoundError: torch` | Use `--no-cache-dir` or conda |
-| `MPS not available` | Requires macOS 13.0+, PyTorch 2.0+ |
-| `torch-geometric` install fails | Install PyG dependencies first (step 4 above) |
-| `ImportError: libomp.dylib` | `brew install libomp` |
-| `RuntimeError: MPS backend out of memory` | Reduce batch size, use CPU: `device = torch.device('cpu')` |
-
-**Force CPU Mode (if MPS causes issues):**
-```python
-# In main.py or your script, force CPU
-device = torch.device('cpu')
-# Or set environment variable
-import os
-os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-```
-
-### Windows
-
-**Option 1: Command Prompt (cmd.exe)**
-```cmd
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate.bat
-
-# Upgrade pip
-python -m pip install --upgrade pip
-
-# Install PyTorch (CPU version)
-pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cpu
-
-# Install other dependencies
-pip install -r requirements.txt
-```
-
-**Option 2: PowerShell**
-```powershell
-# Create virtual environment
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# Upgrade pip
-python -m pip install --upgrade pip
-
-# Install PyTorch (CPU version)
-pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cpu
-
-# Install other dependencies
-pip install -r requirements.txt
-```
-
-**Option 3: Windows with NVIDIA GPU (CUDA)**
-```cmd
-# Install PyTorch with CUDA 11.8 support
-pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cu118
-
-# Install other dependencies
-pip install -r requirements.txt
-```
-
-**For CUDA 12.1:**
-```cmd
-pip install torch torch-geometric --index-url https://download.pytorch.org/whl/cu121
-```
-
-### Manual Install (All Platforms)
-```bash
-pip install torch torch-geometric pandas numpy scikit-learn matplotlib networkx scipy tqdm
-```
-
-### Verify Installation
-```bash
-# Test imports
-python scripts/test_imports.py
-
-# Quick model test
-python scripts/test_model.py
+pip install pandas scikit-learn networkx matplotlib tqdm
 ```
 
 ## Dataset
 
-The UNSW-NB15 dataset is automatically downloaded if not present. You can also manually
-download from: https://www.unsw.adfa.edu.au/unsw-canberra-cyber/cybersecurity/ADFA-NB15-Datasets/
-
-Place the files in `data/`:
+The UNSW-NB15 dataset must be placed in the `data/` directory:
 - `UNSW_NB15_training-set.csv`
 - `UNSW_NB15_testing-set.csv`
 
+Download from: https://research.unsw.edu.au/projects/unsw-nb15-dataset
+
 ## Usage
 
-### Train both models (GCN vs ST-GNN comparison)
+### Train and Evaluate (Five-Seed Final Experiment)
 
 ```bash
-python main.py --model both --download
+# Train both models with 5 seeds, 50 epochs each (final experiment configuration)
+python main.py --model both --multi-seed --seeds 42 123 456 789 999 --epochs 50 --patience 10
 ```
 
-### Train only GCN baseline
+This produces:
+- `results/seed_<seed>_results.json` — per-seed detailed results
+- `results/multi_seed_aggregate.json` — five-seed aggregate (mean ± std)
+- `results/evaluation_results.json` — single-seed (last run) results
+- `results/report.md` — summary report
+- `results/training_curves.png` — training curves
+- `models/gcn_model.pt`, `models/stgnn_model.pt` — best checkpoints
+
+### Train Single Model (Single Seed)
 
 ```bash
-python main.py --model gcn
+# GCN-only baseline
+python main.py --model gcn --epochs 50 --patience 10
+
+# ST-GraphAD
+python main.py --model stgnn --epochs 50 --patience 10
 ```
 
-### Train only ST-GNN
+### Generate Visualizations from Saved Models
 
 ```bash
-python main.py --model stgnn
+python main.py --visualize
 ```
 
-### Generate visualizations from trained models
+## Configuration (Final Experiment)
+
+| Parameter | Value |
+|-----------|-------|
+| Hidden channels | 128 |
+| GCN layers | 3 |
+| Temporal attention layers | 2 |
+| Attention heads | 4 |
+| Dropout | 0.5 |
+| Learning rate | 1e-3 |
+| Weight decay | 5e-4 |
+| Max epochs | 50 |
+| Early stopping patience | 10 |
+| Sequence length | 5 |
+| Max train sequences/epoch | 200 |
+| Loss weight (λ) | 0.5 |
+| Seeds | 42, 123, 456, 789, 999 |
+
+## Dataset Split
+
+| Split | Flows | Temporal Graphs | Nodes | Edges |
+|-------|-------|-----------------|-------|-------|
+| Train | 149,039 | 150 | 178 | 298K |
+| Validation | 26,302 | 27 | 174 | 53K |
+| Test (official) | 82,332 | 83 | 172 | 165K |
+
+- Training CSV split 85/15 stratified by flow label
+- Official test CSV **never used** during training/validation
+- Preprocessing (LabelEncoder, StandardScaler) fitted on training partition only
+
+## Known Limitations
+
+1. **Pseudo-node construction**: Nodes are (protocol, service, role) tuples, not real IPs. Multiple real hosts collapse to one pseudo-node.
+2. **Pseudo-temporal ordering**: Windows derived from CSV row order (1000 flows/window), not real timestamps.
+3. **Binary node labels only**: No per-attack-category evaluation implemented.
+4. **Higher variance**: ST-GraphAD AUC std 0.078 vs GCN 0.030 — sensitivity to initialization.
+5. **CPU-only training**: GPU not available; larger hyperparameter searches infeasible.
+6. **No attention interpretability**: Head specialization and attention entropy not quantitatively analyzed.
+7. **Single dataset**: Results may not generalize to other NIDS datasets.
+
+## Reproducibility
+
+To reproduce the exact five-seed final experiment:
 
 ```bash
-python main.py --model both --visualize
+python main.py --model both --multi-seed --seeds 42 123 456 789 999 \
+    --epochs 50 --patience 10 --hidden 128 --layers 3 --temporal-layers 2 --heads 4
 ```
 
-### Advanced options
-
-```bash
-python main.py --model both \
-    --epochs 200 \
-    --hidden 256 \
-    --layers 4 \
-    --temporal-layers 3 \
-    --heads 8 \
-    --seq-len 10 \
-    --dropout 0.3
-```
+Expected outputs (approximately):
+- GCN: AUC 0.612 ± 0.030, F1 0.836 ± 0.013
+- ST-GraphAD: AUC 0.657 ± 0.078, F1 0.858 ± 0.021
 
 ## Project Structure
 
 ```
 ST-GraphAD/
 ├── main.py                 # Entry point
-├── requirements.txt        # Dependencies
 ├── src/
-│   ├── data_loader.py      # UNSW-NB15 loading & graph construction
-│   ├── models.py           # GCN, Temporal Attention, ST-GNN models
-│   ├── train.py            # Training & evaluation pipeline
-│   ├── visualize.py        # Visualization utilities
-├── data/                   # Dataset (auto-downloaded)
+│   ├── data_loader.py      # UNSW-NB15 loading, preprocessing, graph construction
+│   ├── models.py           # GCNOnly, STGNN model definitions
+│   ├── train.py            # Training, evaluation, multi-seed orchestration
+│   └── visualize.py        # Visualization utilities
+├── data/                   # UNSW-NB15 CSV files (not tracked)
+├── results/                # Output: JSON results, reports, figures
 ├── models/                 # Saved model checkpoints
-│   ├── gcn_model.pt
-│   └── stgnn_model.pt
-└── results/                # Evaluation results & visualizations
-    ├── evaluation_results.json
-    ├── training_curves.png
-    ├── metrics_comparison.png
-    └── predictions_*/
+├── manuscript_full_text.txt    # Full manuscript (publication-ready)
+├── RESEARCH.md             # Extended research document
+└── README.md               # This file
 ```
 
-## Evaluation Metrics
+## Citation
 
-The system reports:
+If you use this work, please cite:
 
-- **AUC-ROC**: Area under the ROC curve (graph-level and node-level)
-- **F1-Score**: Harmonic mean of precision and recall
-- **Precision**: True positives / (true positives + false positives)
-- **Recall**: True positives / (true positives + false negatives)
-- **Confusion Matrix**: Detailed breakdown of predictions
-
-## Model Comparison
-
-The system automatically compares:
-
-| Model | Description |
-|-------|-------------|
-| GCN-only | Static graph convolution, no temporal modeling |
-| ST-GNN | GCN + Multi-head Temporal Attention |
-
-Expected improvements with temporal attention:
-- Better detection of evolving attack patterns
-- Improved precision by reducing false positives
-- Higher AUC-ROC for sequential anomaly detection
-
-## Visualization Outputs
-
-1. **Training Curves**: Loss, AUC, F1 over epochs
-2. **ROC Curves**: Model comparison ROC curves
-3. **Confusion Matrices**: Per-model confusion matrix
-4. **t-SNE/PCA**: Embedding space visualization
-5. **Attention Weights**: Temporal attention patterns
-6. **Graph Structure**: Visual representation of network topology
-7. **Anomaly Score Distribution**: Normal vs attack score separation
-
-## References
-
-- K. M. Al-Saadi et al., "UNSW-NB15: a comprehensive data set for network intrusion detection systems"
-- T. N. Kipf and M. Welling, "Semi-Supervised Classification with Graph Convolutional Networks"
-- A. Vaswani et al., "Attention Is All You Need"
+```bibtex
+@misc{bhaumik2024stgraphad,
+  author       = {Ayan Bhaumik},
+  title        = {ST-GraphAD: Spatio-Temporal Graph Neural Network for Network Intrusion Detection on UNSW-NB15},
+  year         = {2024},
+  note         = {Independent Research},
+  url          = {https://github.com/ayanbhaumik/ST-GraphAD}
+}
+```
 
 ## License
 
