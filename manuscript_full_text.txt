@@ -84,8 +84,8 @@ Node Definition
 
 The UNSW-NB15 CSV release does not provide explicit source/destination IP addresses. We construct pseudo-nodes from categorical combinations:
 
-srcip = proto + '_' + service + '_src
-dstip = state + '_' + service + '_dst
+srcip = proto + '_' + service + '_src'
+dstip = state + '_' + service + '_dst'
 
 This means each unique (protocol, service, role) tuple becomes a node. Multiple real hosts sharing the same tuple collapse to a single pseudo-node—a known limitation (§8).
 

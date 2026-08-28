@@ -32,7 +32,7 @@
 
 - Best validation epoch: 105
 - Best validation node AUC: 0.9928
-- Runtime: 106.8s
+- Runtime: 119.9s
 - Test confusion matrix: [[99, 438], [187, 1365]]
 - Positive samples: 1552, Negative samples: 537
 
@@ -40,7 +40,7 @@
 
 - Best validation epoch: 106
 - Best validation node AUC: 0.9934
-- Runtime: 625.5s
+- Runtime: 631.2s
 - Test confusion matrix: [[71, 466], [177, 1375]]
 - Positive samples: 1552, Negative samples: 537
 
